@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="PassiveData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/PassiveData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"passive_adjacency"
+display_name = "Solidarity"
+description = "+3 ATK when an ally is on an adjacent tile."
+trigger_event = 3
+effect_type = 0
+effect_value = 3.0

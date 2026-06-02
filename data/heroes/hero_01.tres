@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="HeroData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/HeroData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"hero_aldric"
+display_name = "Aldric"
+base_hp = 100
+base_atk = 14
+base_def = 12
+base_spd = 2
+attack_type = 0

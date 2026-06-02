@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="EnemyData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/EnemyData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"enemy_archer"
+display_name = "Archer"
+base_hp = 55
+base_atk = 13
+base_def = 4
+base_spd = 4
+attack_type = 1
+skill_range = 3
+skill_base_damage = 13.0
+skill_display_name = "Piercing Shot"

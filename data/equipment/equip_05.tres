@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="EquipmentData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/EquipmentData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"equip_power_ring"
+display_name = "Power Ring"
+description = "+4 ATK, -1 DEF"
+atk_bonus = 4
+def_bonus = -1
+spd_bonus = 0
+hp_bonus = 0

@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="EquipmentData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/EquipmentData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"equip_mystic_staff"
+display_name = "Mystic Staff"
+description = "+3 ATK, +2 SPD"
+atk_bonus = 3
+def_bonus = 0
+spd_bonus = 2
+hp_bonus = 0

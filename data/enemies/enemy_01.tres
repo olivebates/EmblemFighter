@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="EnemyData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/EnemyData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"enemy_grunt"
+display_name = "Grunt"
+base_hp = 70
+base_atk = 11
+base_def = 8
+base_spd = 2
+attack_type = 0
+skill_range = 1
+skill_base_damage = 11.0
+skill_display_name = "Crushing Blow"

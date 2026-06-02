@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="HeroData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/HeroData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"hero_sera"
+display_name = "Sera"
+base_hp = 75
+base_atk = 15
+base_def = 6
+base_spd = 4
+attack_type = 1

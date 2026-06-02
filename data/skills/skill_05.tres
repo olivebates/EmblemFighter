@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="SkillData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/SkillData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"skill_fireball"
+display_name = "Fireball"
+description = "A magical explosion dealing mage damage."
+icon_tint = Color(1, 1, 1, 1)
+range = 3
+base_damage = 20.0
+target_type = 1
+use_type_override = true
+attack_type_override = 2

@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="PassiveData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/PassiveData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"passive_kill_boost"
+display_name = "Bloodlust"
+description = "+5 ATK after each kill this turn."
+trigger_event = 1
+effect_type = 3
+effect_value = 5.0

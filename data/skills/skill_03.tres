@@ -1,0 +1,15 @@
+[gd_resource type="Resource" script_class="SkillData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/SkillData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"skill_arrow_shot"
+display_name = "Arrow Shot"
+description = "A ranged shot targeting a single enemy."
+icon_tint = Color(1, 1, 1, 1)
+range = 4
+base_damage = 15.0
+target_type = 0
+use_type_override = true
+attack_type_override = 1

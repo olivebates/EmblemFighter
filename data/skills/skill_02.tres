@@ -1,0 +1,14 @@
+[gd_resource type="Resource" script_class="SkillData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/SkillData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"skill_shield_bash"
+display_name = "Shield Bash"
+description = "Melee slam that deals moderate damage."
+icon_tint = Color(1, 1, 1, 1)
+range = 1
+base_damage = 14.0
+target_type = 0
+use_type_override = false

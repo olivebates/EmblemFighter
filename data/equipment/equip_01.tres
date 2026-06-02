@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="EquipmentData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/EquipmentData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"equip_iron_sword"
+display_name = "Iron Sword"
+description = "+5 ATK"
+atk_bonus = 5
+def_bonus = 0
+spd_bonus = 0
+hp_bonus = 0

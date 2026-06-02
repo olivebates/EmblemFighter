@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="EquipmentData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/EquipmentData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"equip_amulet"
+display_name = "Vitality Amulet"
+description = "+20 HP"
+atk_bonus = 0
+def_bonus = 0
+spd_bonus = 0
+hp_bonus = 20

@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="HeroData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://resources/HeroData.gd" id="1"]
+
+[resource]
+script = ExtResource("1")
+id = &"hero_lyris"
+display_name = "Lyris"
+base_hp = 70
+base_atk = 16
+base_def = 5
+base_spd = 4
+attack_type = 1
