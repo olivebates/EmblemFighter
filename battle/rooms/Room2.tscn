@@ -1,0 +1,32 @@
+[gd_scene load_steps=7 format=3 uid="uid://eyuhq4wl0gnd"]
+
+[ext_resource type="Script" uid="uid://clpa82fpdrm85" path="res://battle/rooms/RoomScene.gd" id="1_room1"]
+[ext_resource type="Script" path="res://battle/rooms/GridBounds.gd" id="2_bounds"]
+[ext_resource type="Script" path="res://battle/rooms/SpawnZone.gd" id="3_spawn"]
+[ext_resource type="TileSet" uid="uid://c7p1j4qjkr03h" path="res://battle/rooms/tilesets/floor_tileset.tres" id="4_floor"]
+[ext_resource type="TileSet" uid="uid://cae10e6wn81ud" path="res://battle/rooms/tilesets/wall_tileset.tres" id="5_wall"]
+[ext_resource type="TileSet" uid="uid://drtof8dppljch" path="res://battle/rooms/tilesets/cover_tileset.tres" id="6_cover"]
+
+[node name="Room2" type="Node2D"]
+script = ExtResource("1_room1")
+
+[node name="GridBounds" type="Node2D" parent="."]
+script = ExtResource("2_bounds")
+
+[node name="FloorLayer" type="TileMapLayer" parent="."]
+tile_set = ExtResource("4_floor")
+
+[node name="WallLayer" type="TileMapLayer" parent="."]
+tile_set = ExtResource("5_wall")
+
+[node name="CoverLayer" type="TileMapLayer" parent="."]
+tile_set = ExtResource("6_cover")
+
+[node name="HeroSpawn" type="Node2D" parent="."]
+position = Vector2(96, 320)
+script = ExtResource("3_spawn")
+
+[node name="EnemySpawn" type="Node2D" parent="."]
+position = Vector2(96, 64)
+script = ExtResource("3_spawn")
+zone_type = 1

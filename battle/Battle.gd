@@ -8,6 +8,8 @@ extends Node2D
 
 var _camera_tween: Tween = null
 var _victory_menu: VictoryMenu
+var _spawn_zone_layer: Node2D = null
+var _start_combat_btn: Button = null
 
 func _ready() -> void:
 	_victory_menu = VictoryMenu.new()
@@ -32,6 +34,9 @@ func _ready() -> void:
 	hud.skill_bar_selected.connect(battle_manager.on_skill_bar_selected)
 	hud.skill_bar_end_pressed.connect(battle_manager.on_skill_bar_end_pressed)
 	hud.set_layout_context(self, grid)
+	battle_manager.placement_started.connect(_on_placement_started)
+	_build_spawn_zone_layer()
+	_build_start_combat_button()
 	battle_manager.setup(grid, units_layer, hud)
 	battle_manager.active_skill_changed.connect(_on_active_skill_changed)
 	battle_manager.active_actor_changed.connect(_on_active_actor_changed)
@@ -83,6 +88,9 @@ func _refresh_range_glows() -> void:
 	hud.show_unit_glows(glow_units, tint, grid)
 
 func _sync_highlight_mode() -> void:
+	if battle_manager.state == BattleManager.State.PLACEMENT:
+		hud.set_highlight_mode(BattleHUD.HighlightMode.MOVE)
+		return
 	if battle_manager.state == BattleManager.State.ENEMY_TURN:
 		hud.set_highlight_mode(BattleHUD.HighlightMode.ENEMY)
 	elif battle_manager.hero_phase == BattleManager.HeroPhase.AWAIT_SKILL:
@@ -113,9 +121,12 @@ func _input(event: InputEvent) -> void:
 			var grid_pos := grid.world_to_grid(get_local_mouse_position())
 			if not grid.is_in_bounds(grid_pos):
 				return
-			var smart_cast = event.shift_pressed
-			var move_only = event.alt_pressed and battle_manager.hero_phase == BattleManager.HeroPhase.AWAIT_MOVE
-			battle_manager.on_tile_clicked(grid_pos, smart_cast, move_only)
+			if battle_manager.state == BattleManager.State.PLACEMENT:
+				battle_manager.on_placement_tile_clicked(grid_pos)
+			else:
+				var smart_cast = event.shift_pressed
+				var move_only = event.alt_pressed and battle_manager.hero_phase == BattleManager.HeroPhase.AWAIT_MOVE
+				battle_manager.on_tile_clicked(grid_pos, smart_cast, move_only)
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
 			if battle_manager.state == BattleManager.State.HERO_TURN:
 				battle_manager.on_skill_bar_end_pressed()
@@ -317,15 +328,25 @@ func _on_state_changed(new_state: BattleManager.State) -> void:
 	hud.hide_radial_menu()
 	hud.clear_enemy_telegraph()
 	match new_state:
+		BattleManager.State.PLACEMENT:
+			hud.clear_highlights()
+			hud.hide_skill_bar()
+			hud.clear_unit_glows()
 		BattleManager.State.HERO_TURN:
+			_start_combat_btn.hide()
+			_clear_spawn_zones()
 			hud.show_hero_turn()
 			hud.clear_highlights()
 		BattleManager.State.ENEMY_TURN:
+			_start_combat_btn.hide()
+			_clear_spawn_zones()
 			hud.show_enemy_turn()
 			hud.clear_highlights()
 			hud.clear_unit_glows()
 			_update_status_counter_highlights()
 		BattleManager.State.GAME_OVER:
+			_start_combat_btn.hide()
+			_clear_spawn_zones()
 			hud.show_game_over(battle_manager.enemy_units.is_empty())
 			hud.clear_unit_glows()
 	_sync_highlight_mode()
@@ -378,7 +399,12 @@ func _on_movement_tiles_updated(tiles: Array) -> void:
 	_refresh_range_glows()
 
 func _on_skill_targets_updated(tiles: Array) -> void:
-	hud.show_target_highlights(tiles, grid, _skill_tint())
+	var atype = -1
+	if battle_manager.active_hero != null:
+		var idx = battle_manager._current_skill_index
+		if idx >= 0 and idx < battle_manager.active_hero.skills.size():
+			atype = battle_manager.active_hero.skills[idx].attack_type_override
+	hud.show_target_highlights(tiles, grid, _skill_tint(), atype)
 	_sync_highlight_mode()
 	_refresh_range_glows()
 	if tiles.is_empty():
@@ -437,6 +463,63 @@ func _update_camera() -> void:
 	_camera_tween = create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_camera_tween.tween_property(camera, "position", center, 0.4)
 	_camera_tween.parallel().tween_property(camera, "zoom", Vector2(target_zoom, target_zoom), 0.4)
+
+func _build_spawn_zone_layer() -> void:
+	_spawn_zone_layer = Node2D.new()
+	_spawn_zone_layer.name = "SpawnZones"
+	_spawn_zone_layer.z_index = -1
+	grid.add_child(_spawn_zone_layer)
+
+func _build_start_combat_button() -> void:
+	var canvas = CanvasLayer.new()
+	canvas.layer = 8
+	add_child(canvas)
+	var root = Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	canvas.add_child(root)
+	_start_combat_btn = Button.new()
+	_start_combat_btn.text = "Start Combat"
+	_start_combat_btn.custom_minimum_size = Vector2(160, 30)
+	_start_combat_btn.set_anchor_and_offset(SIDE_LEFT, 0.5, -80)
+	_start_combat_btn.set_anchor_and_offset(SIDE_TOP, 0, 4)
+	_start_combat_btn.set_anchor_and_offset(SIDE_RIGHT, 0.5, 80)
+	_start_combat_btn.set_anchor_and_offset(SIDE_BOTTOM, 0, 34)
+	UITheme.apply_button_theme(_start_combat_btn, true, 4)
+	_start_combat_btn.pressed.connect(func(): battle_manager.start_combat())
+	root.add_child(_start_combat_btn)
+	_start_combat_btn.hide()
+
+func _on_placement_started() -> void:
+	_start_combat_btn.show()
+	_draw_spawn_zones()
+
+func _draw_spawn_zones() -> void:
+	_clear_spawn_zones()
+	var room = RoomLibrary.active_room as RoomData
+	if room == null:
+		return
+	_add_zone_rects(room.hero_spawn, Color(0.3, 0.6, 1.0, 0.22))
+	_add_zone_rects(room.enemy_spawn, Color(1.0, 0.3, 0.3, 0.22))
+
+func _add_zone_rects(spawn_rect: Rect2i, color: Color) -> void:
+	for x in range(spawn_rect.position.x, spawn_rect.position.x + spawn_rect.size.x):
+		for y in range(spawn_rect.position.y, spawn_rect.position.y + spawn_rect.size.y):
+			var pos = Vector2i(x, y)
+			if not grid.is_in_bounds(pos):
+				continue
+			var rect = ColorRect.new()
+			rect.size = Vector2(Grid.TILE_SIZE, Grid.TILE_SIZE)
+			rect.position = grid.grid_to_world(pos) - Vector2(Grid.TILE_SIZE / 2.0, Grid.TILE_SIZE / 2.0)
+			rect.color = color
+			rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			_spawn_zone_layer.add_child(rect)
+
+func _clear_spawn_zones() -> void:
+	if _spawn_zone_layer == null:
+		return
+	for child in _spawn_zone_layer.get_children():
+		child.queue_free()
 
 func _on_victory() -> void:
 	_victory_menu.show_menu()

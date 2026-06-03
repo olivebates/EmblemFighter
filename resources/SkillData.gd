@@ -39,6 +39,21 @@ func get_display_tint(skill_index: int = 0) -> Color:
 		return BUFF_TINT
 	return SLOT_ATTACK_TINTS[skill_index % SLOT_ATTACK_TINTS.size()]
 
+func get_attack_type_tint() -> Color:
+	if base_damage < 0:
+		return HEAL_TINT
+	if target_type == TargetType.SELF:
+		return BUFF_TINT
+	if target_type == TargetType.ALLY_SINGLE and base_damage <= 0:
+		return BUFF_TINT
+	match attack_type_override:
+		WeaponTriangle.Type.RANGE:
+			return Color(0.25, 0.85, 0.35, 1.0)
+		WeaponTriangle.Type.MAGE:
+			return Color(0.3, 0.5, 1.0, 1.0)
+		_:
+			return Color(0.9, 0.2, 0.2, 1.0)
+
 func is_healing() -> bool:
 	return base_damage < 0
 

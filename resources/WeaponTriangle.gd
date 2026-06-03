@@ -9,5 +9,5 @@ static func get_multiplier(attacker: Type, defender: Type) -> float:
 	if (attacker == Type.MAGE and defender == Type.MELEE) or \
 	   (attacker == Type.MELEE and defender == Type.RANGE) or \
 	   (attacker == Type.RANGE and defender == Type.MAGE):
-		return 1.2
-	return 0.8
+		return 2.0
+	return 0.5

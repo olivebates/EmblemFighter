@@ -1,0 +1,17 @@
+[gd_resource type="TileSet" load_steps=3 format=3 uid="uid://cae10e6wn81ud"]
+
+[ext_resource type="Texture2D" uid="uid://bs0jee75u0m0r" path="res://Sprite/Placeholders/tile_mountain.png" id="1_wall"]
+
+[sub_resource type="TileSetAtlasSource" id="1_atlas"]
+texture = ExtResource("1_wall")
+texture_region_size = Vector2i(32, 32)
+0:0/0 = 0
+0:0/0/terrain_set = 0
+0:0/0/terrain = 0
+
+[resource]
+tile_size = Vector2i(32, 32)
+terrain_set_0/mode = 0
+terrain_set_0/terrain_0/name = "Terrain 0"
+terrain_set_0/terrain_0/color = Color(0.7401787, 0.749773, 0.730679, 1)
+sources/0 = SubResource("1_atlas")

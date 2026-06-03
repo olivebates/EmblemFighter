@@ -1,0 +1,17 @@
+[gd_resource type="TileSet" load_steps=3 format=3 uid="uid://drtof8dppljch"]
+
+[ext_resource type="Texture2D" uid="uid://cux2og7knn081" path="res://Sprite/Placeholders/tile_forrest.png" id="1_cover"]
+
+[sub_resource type="TileSetAtlasSource" id="1_atlas"]
+texture = ExtResource("1_cover")
+texture_region_size = Vector2i(32, 32)
+0:0/0 = 0
+0:0/0/terrain_set = 0
+0:0/0/terrain = 0
+
+[resource]
+tile_size = Vector2i(32, 32)
+terrain_set_0/mode = 0
+terrain_set_0/terrain_0/name = "Forest"
+terrain_set_0/terrain_0/color = Color(0.23425466, 0.4388764, 0.28973046, 1)
+sources/0 = SubResource("1_atlas")

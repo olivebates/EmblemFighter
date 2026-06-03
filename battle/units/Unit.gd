@@ -25,6 +25,17 @@ func init_stats(base_hp: int, base_atk: int, base_def: int, base_spd: int,
 	attack_type = atype
 	label.text = unit_name
 	update_hp_bar()
+	queue_redraw()
+
+func _draw() -> void:
+	var dot_color = Color(0.9, 0.2, 0.2)
+	match attack_type:
+		WeaponTriangle.Type.RANGE:
+			dot_color = Color(0.25, 0.85, 0.35)
+		WeaponTriangle.Type.MAGE:
+			dot_color = Color(0.3, 0.5, 1.0)
+	draw_rect(Rect2(-16, 10, 4, 4), Color(0, 0, 0, 1))
+	draw_rect(Rect2(-15, 11, 2, 2), dot_color)
 
 func set_body_sprite(sprite: Texture2D) -> void:
 	var body := get_node_or_null("Body") as Sprite2D

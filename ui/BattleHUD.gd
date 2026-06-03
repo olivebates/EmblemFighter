@@ -39,8 +39,12 @@ var _tracked_active_unit: Unit = null
 var _move_ghosts: Array[Node] = []
 var _counter_highlights: Array[Node] = []
 var _smart_preview_nodes: Array[Node] = []
+var _move_outline: Array[Node] = []
+var _skill_outline: Array[Node] = []
 
 var _hover_panel: Panel = null
+var _effects_desc_panel: Control = null
+var _weakness_panel: Control = null
 
 var _move_positions: Array[Vector2i] = []
 var _skill_range_positions: Array[Vector2i] = []
@@ -59,6 +63,7 @@ const POPUP_PAD := 8.0
 const BADGE_PLACE_STEP := 16
 const LINE_BLOCKER_PAD := 12.0
 const BADGE_WIDTH := 152.0
+const BADGE_SKILL_NAME_COLOR := Color(0.96, 0.92, 0.78)
 
 var _highlight_mode: HighlightMode = HighlightMode.NONE
 var _detail_chips_visible: bool = false
@@ -92,6 +97,11 @@ func _ready() -> void:
 	_screen_popup_layer.z_index = 150
 	add_child(_screen_popup_layer)
 
+	_weakness_panel = _create_weakness_panel()
+	_weakness_panel.visible = false
+	_screen_popup_layer.add_child(_weakness_panel)
+	_weakness_panel.position = Vector2(8.0, 44.0)
+
 func set_highlight_mode(mode: HighlightMode) -> void:
 	if _highlight_mode == mode:
 		return
@@ -99,8 +109,10 @@ func set_highlight_mode(mode: HighlightMode) -> void:
 	if mode != HighlightMode.MOVE:
 		_free_list(_move_highlights)
 		_free_list(_cover_highlights)
+		_free_list(_move_outline)
 		_move_positions.clear()
 	if mode != HighlightMode.SKILL:
+		_free_list(_skill_outline)
 		_free_list(_skill_range_highlights)
 		_free_list(_valid_target_highlights)
 		_free_list(_cursor_aoe_highlights)
@@ -300,17 +312,57 @@ func _position_skill_badge(panel: Control, fallback_grid: Vector2i) -> void:
 	var sz := _measure_control(panel)
 	panel.position = _place_skill_badge(anchor, sz)
 
+func _position_badge_for_targets(badge: Control, fallback_grid: Vector2i) -> void:
+	if badge == null:
+		return
+	badge.set_meta("badge_fallback_grid", fallback_grid)
+	var sz = _badge_stack_size(badge)
+	var target_positions = badge.get_meta("target_positions", []) as Array
+	var vp = _viewport_size()
+	var half_tile = TILE_SIZE * 0.5
+	var gap = 8.0
+	if not target_positions.is_empty():
+		var hero_grid_pos = badge.get_meta("hero_grid", fallback_grid) as Vector2i
+		var primary_target = target_positions[0] as Vector2i
+		var place_left = primary_target.x < hero_grid_pos.x
+		badge.set_meta("badge_place_left", place_left)
+		var target_sp = _grid_to_screen(primary_target)
+		if target_positions.size() > 1:
+			var sum_x = 0.0
+			var sum_y = 0.0
+			for pos in target_positions:
+				var sp = _grid_to_screen(pos as Vector2i)
+				sum_x += sp.x
+				sum_y += sp.y
+			target_sp = Vector2(sum_x / float(target_positions.size()),
+				sum_y / float(target_positions.size()))
+		badge.set_meta("badge_target_screen_y", target_sp.y)
+		var target_left = target_sp.x - half_tile
+		var target_right = target_sp.x + half_tile
+		var badge_x: float
+		if place_left:
+			badge_x = target_left - gap - sz.x
+		else:
+			badge_x = target_right + gap
+		badge_x = clampf(badge_x, SCREEN_MARGIN, vp.x - sz.x - SCREEN_MARGIN)
+		badge.position = Vector2(badge_x, badge.position.y)
+		_layout_attack_popups(badge)
+		return
+	var anchor = _resolve_badge_anchor_grid(fallback_grid)
+	badge.set_meta("badge_anchor_grid", anchor)
+	badge.position = _place_skill_badge(anchor, sz)
+
 func _relayout_skill_badges() -> void:
 	if (_hero_skill_screen_popup and is_instance_valid(_hero_skill_screen_popup)
 			and _popup_anchor_unit and is_instance_valid(_popup_anchor_unit)):
 		var fallback: Vector2i = _hero_skill_screen_popup.get_meta(
 			"badge_fallback_grid", _popup_anchor_unit.grid_pos)
-		_position_skill_badge(_hero_skill_screen_popup, fallback)
+		_position_badge_for_targets(_hero_skill_screen_popup, fallback)
 	if _smart_preview_badge and is_instance_valid(_smart_preview_badge):
 		var fallback: Vector2i = _smart_preview_badge.get_meta(
 			"badge_fallback_grid", Vector2i(-999, -999))
 		if fallback != Vector2i(-999, -999):
-			_position_skill_badge(_smart_preview_badge, fallback)
+			_position_badge_for_targets(_smart_preview_badge, fallback)
 
 func _place_popup_near_tile(grid_pos: Vector2i, popup_size: Vector2) -> Vector2:
 	return _place_skill_badge(grid_pos, popup_size)
@@ -319,6 +371,93 @@ func _measure_control(ctrl: Control) -> Vector2:
 	if ctrl == null:
 		return Vector2.ZERO
 	return ctrl.get_combined_minimum_size()
+
+func _badge_stack_size(badge: Control) -> Vector2:
+	if badge == null:
+		return Vector2.ZERO
+	var stack = badge.get_child(0) as Control
+	if stack == null:
+		return _measure_control(badge)
+	stack.queue_sort()
+	var sz = stack.get_combined_minimum_size()
+	sz.x = maxf(sz.x, BADGE_WIDTH)
+	return sz
+
+func _panel_layout_size(panel: PanelContainer) -> Vector2:
+	if panel == null:
+		return Vector2.ZERO
+	panel.queue_sort()
+	panel.reset_size()
+	return panel.get_combined_minimum_size()
+
+func _weapon_mult_damage_color(weapon_mult: float) -> Color:
+	if weapon_mult > 1.0:
+		return Color(0.38, 0.95, 0.48)
+	if weapon_mult < 1.0:
+		return Color(0.95, 0.38, 0.38)
+	return Color(0.95, 0.88, 0.35)
+
+func _preview_panel_tint(previews: Array) -> Color:
+	if previews.is_empty():
+		return _weapon_mult_damage_color(1.0)
+	if previews[0].get("is_heal", false):
+		return UITheme.COLOR_HEAL
+	return _weapon_mult_damage_color(previews[0].weapon_mult)
+
+func _sync_effects_panel_tint(tint: Color) -> void:
+	if _effects_desc_panel == null or not is_instance_valid(_effects_desc_panel):
+		return
+	_effects_desc_panel.add_theme_stylebox_override("panel", UITheme.badge_panel_style(tint))
+
+func _apply_badge_panel_styles(badge: Control, tint: Color) -> void:
+	badge.set_meta("badge_panel_tint", tint)
+	badge.set_meta("badge_tint", tint)
+	var panel = badge.find_child("BadgePanel", true, false) as PanelContainer
+	if panel:
+		panel.add_theme_stylebox_override("panel", UITheme.badge_panel_style(tint))
+	var hdr = badge.find_child("HeaderLabel", true, false) as Label
+	if hdr:
+		var header_strip = hdr.get_parent() as PanelContainer
+		if header_strip:
+			header_strip.add_theme_stylebox_override(
+				"panel", UITheme.badge_header_style(tint, hdr.text))
+	var caret = badge.find_child("BadgeCaret", true, false) as Label
+	if caret:
+		caret.modulate = Color(tint.r, tint.g, tint.b, 0.8)
+	var atk_type_lbl = badge.find_child("AttackTypeLabel", true, false) as Label
+	if atk_type_lbl:
+		atk_type_lbl.modulate = tint.lightened(0.12)
+	_sync_effects_panel_tint(tint)
+
+func _layout_attack_popups(badge: Control) -> void:
+	if badge == null:
+		return
+	var target_y = float(badge.get_meta("badge_target_screen_y", -1.0))
+	if target_y < 0.0:
+		return
+	var badge_sz = _badge_stack_size(badge)
+	badge.size = badge_sz
+	var desc_sz = Vector2.ZERO
+	var desc_panel: PanelContainer = null
+	if _effects_desc_panel and is_instance_valid(_effects_desc_panel):
+		desc_panel = _effects_desc_panel as PanelContainer
+		desc_sz = _panel_layout_size(desc_panel)
+		_effects_desc_panel.size = desc_sz
+	var shared_h = maxf(badge_sz.y, desc_sz.y)
+	var vp = _viewport_size()
+	var pair_top = clampf(target_y - shared_h * 0.5, SCREEN_MARGIN, vp.y - shared_h - SCREEN_MARGIN)
+	badge.position.y = pair_top + (shared_h - badge_sz.y) * 0.5
+	if desc_panel == null:
+		return
+	var gap = 6.0
+	var place_left = bool(badge.get_meta("badge_place_left", false))
+	var desc_x: float
+	if place_left:
+		desc_x = badge.position.x - desc_sz.x - gap
+	else:
+		desc_x = badge.position.x + badge_sz.x + gap
+	desc_x = clampf(desc_x, SCREEN_MARGIN, vp.x - desc_sz.x - SCREEN_MARGIN)
+	desc_panel.position = Vector2(desc_x, pair_top + (shared_h - desc_sz.y) * 0.5)
 
 func _layout_damage_preview() -> void:
 	if _preview_label == null or _preview_label.text == "":
@@ -334,6 +473,7 @@ func _layout_damage_preview() -> void:
 
 func _layout_hero_skill_popup() -> void:
 	_relayout_skill_badges()
+	_relayout_effects_panel()
 
 # --- Skill bar ---
 
@@ -451,14 +591,15 @@ func show_active_skill_on_hero(hero: HeroUnit, skill: SkillData, skill_index: in
 		return
 	if skill_index < 0:
 		skill_index = hero.skills.find(skill)
-	var tint := skill.get_display_tint(skill_index)
+	var tint := _weapon_mult_damage_color(1.0)
 	if (_hero_skill_screen_popup and is_instance_valid(_hero_skill_screen_popup)
 			and _popup_anchor_unit == hero):
 		_active_skill = skill
 		_active_skill_index = skill_index
 		_update_badge_identity(_hero_skill_screen_popup, hero, skill, skill_index, tint, "ACTIVE")
+		_hero_skill_screen_popup.set_meta("hero_grid", hero.grid_pos)
 		_update_badge_previews(_hero_skill_screen_popup, previews)
-		_position_skill_badge(_hero_skill_screen_popup, hero.grid_pos)
+		_position_badge_for_targets(_hero_skill_screen_popup, hero.grid_pos)
 		return
 	clear_active_skill_on_hero()
 	_active_skill = skill
@@ -466,16 +607,17 @@ func show_active_skill_on_hero(hero: HeroUnit, skill: SkillData, skill_index: in
 	_popup_anchor_unit = hero
 	_hero_skill_screen_popup = _create_skill_badge(
 		hero, skill, skill_index, tint, "ACTIVE", previews)
+	_hero_skill_screen_popup.set_meta("hero_grid", hero.grid_pos)
 	if _screen_popup_layer:
 		_screen_popup_layer.add_child(_hero_skill_screen_popup)
-		_position_skill_badge(_hero_skill_screen_popup, hero.grid_pos)
+		_position_badge_for_targets(_hero_skill_screen_popup, hero.grid_pos)
 		_play_badge_spawn(_hero_skill_screen_popup)
 
 func update_active_skill_badge_damage(previews: Array) -> void:
 	if _hero_skill_screen_popup == null or not is_instance_valid(_hero_skill_screen_popup):
 		return
 	_update_badge_previews(_hero_skill_screen_popup, previews)
-	_position_skill_badge(_hero_skill_screen_popup, _popup_anchor_unit.grid_pos)
+	_position_badge_for_targets(_hero_skill_screen_popup, _popup_anchor_unit.grid_pos)
 
 func clear_active_skill_on_hero() -> void:
 	if _hero_skill_screen_popup and is_instance_valid(_hero_skill_screen_popup):
@@ -484,12 +626,14 @@ func clear_active_skill_on_hero() -> void:
 	_popup_anchor_unit = null
 	_active_skill = null
 	_active_skill_index = -1
+	_free_effects_desc_panel()
 
 func _clear_smart_preview_badge() -> void:
 	if _smart_preview_badge and is_instance_valid(_smart_preview_badge):
 		_smart_preview_badge.queue_free()
 	_smart_preview_badge = null
 	_smart_cast_key = ""
+	_free_effects_desc_panel()
 
 func _smart_cast_key_for(hero: HeroUnit, cast_pos: Vector2i) -> String:
 	return "%d_%s" % [hero.get_instance_id(), cast_pos]
@@ -517,21 +661,24 @@ func _create_skill_badge(hero: HeroUnit, skill: SkillData, skill_index: int, tin
 	col.add_theme_constant_override("separation", 6)
 	panel.add_child(col)
 
-	var header_strip := PanelContainer.new()
-	header_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	header_strip.add_theme_stylebox_override("panel", UITheme.badge_header_style(tint, header))
-	col.add_child(header_strip)
+	if header != "WILL USE":
+		var header_strip := PanelContainer.new()
+		header_strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		header_strip.add_theme_stylebox_override("panel", UITheme.badge_header_style(tint, header))
+		col.add_child(header_strip)
 
-	var hdr := Label.new()
-	hdr.name = "HeaderLabel"
-	hdr.text = header
-	hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hdr.add_theme_font_size_override("font_size", UITheme.FONT_XS)
-	hdr.modulate = UITheme.TEXT_PRIMARY
-	hdr.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	header_strip.add_child(hdr)
+		var hdr := Label.new()
+		hdr.name = "HeaderLabel"
+		hdr.text = header
+		hdr.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		hdr.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+		hdr.modulate = UITheme.TEXT_PRIMARY
+		hdr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		header_strip.add_child(hdr)
 
-	col.add_child(_make_badge_separator())
+		col.add_child(_make_badge_separator())
+	else:
+		col.add_child(_make_badge_separator())
 
 	var identity := HBoxContainer.new()
 	identity.name = "IdentityRow"
@@ -545,18 +692,32 @@ func _create_skill_badge(hero: HeroUnit, skill: SkillData, skill_index: int, tin
 	tex.texture = _skill_icon_texture(hero, skill_index, skill)
 	tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	tex.modulate = tint
+	tex.modulate = Color.WHITE
 	tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	identity.add_child(tex)
+
+	var name_col := VBoxContainer.new()
+	name_col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	name_col.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_col.add_theme_constant_override("separation", 2)
+	identity.add_child(name_col)
 
 	var name_lbl := Label.new()
 	name_lbl.name = "SkillName"
 	name_lbl.text = skill.display_name
 	name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_lbl.add_theme_font_size_override("font_size", UITheme.FONT_MD)
-	name_lbl.modulate = tint.lightened(0.15)
+	name_lbl.modulate = BADGE_SKILL_NAME_COLOR
 	name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	identity.add_child(name_lbl)
+	name_col.add_child(name_lbl)
+
+	var atk_type_lbl := Label.new()
+	atk_type_lbl.name = "AttackTypeLabel"
+	atk_type_lbl.text = _attack_type_label_text(skill, 1.0)
+	atk_type_lbl.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+	atk_type_lbl.modulate = tint.lightened(0.12)
+	atk_type_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	name_col.add_child(atk_type_lbl)
 
 	var dmg_sep := _make_badge_separator()
 	dmg_sep.name = "DamageSeparator"
@@ -595,6 +756,10 @@ func _create_skill_badge(hero: HeroUnit, skill: SkillData, skill_index: int, tin
 	total_dmg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	total_row.add_child(total_dmg)
 
+	wrapper.set_meta("skill", skill)
+	wrapper.set_meta("badge_tint", tint)
+	wrapper.set_meta("target_positions", [] as Array)
+
 	var detail_hint := Label.new()
 	detail_hint.name = "DetailHint"
 	detail_hint.text = "Hold Alt for breakdown"
@@ -614,6 +779,7 @@ func _create_skill_badge(hero: HeroUnit, skill: SkillData, skill_index: int, tin
 	stack.add_child(caret)
 
 	_update_badge_previews(wrapper, previews)
+	_update_badge_effects(wrapper, skill)
 	return wrapper
 
 func _make_badge_separator() -> ColorRect:
@@ -645,31 +811,33 @@ func _refresh_badge_chip_visibility() -> void:
 			continue
 		var hint := badge.find_child("DetailHint", true, false) as Label
 		if hint:
-			hint.visible = not _detail_chips_visible
+			hint.visible = true
 		var target_rows := badge.find_child("TargetRows", true, false) as VBoxContainer
 		if target_rows == null:
 			continue
 		for row in target_rows.get_children():
 			_refresh_row_chip_visibility(row as VBoxContainer)
+	if _weakness_panel and is_instance_valid(_weakness_panel):
+		_weakness_panel.visible = _detail_chips_visible
+	if _effects_desc_panel and is_instance_valid(_effects_desc_panel):
+		var detail_labels = _effects_desc_panel.get_meta("effect_detail_labels", []) as Array
+		for node in detail_labels:
+			var desc_lbl = node as Label
+			if desc_lbl == null:
+				continue
+			desc_lbl.visible = _detail_chips_visible
+			if _detail_chips_visible:
+				desc_lbl.reset_size()
+		_effects_desc_panel.reset_size()
+	_relayout_skill_badges()
 
 func _refresh_row_chip_visibility(row: VBoxContainer) -> void:
 	if row == null:
 		return
 	var mod_row := row.find_child("ModRow", true, false) as HBoxContainer
-	var dmg_lbl := row.find_child("DamageValue", true, false) as Label
 	if mod_row == null:
 		return
-	var is_kill = dmg_lbl != null and dmg_lbl.get_meta("is_kill", false)
-	var show_all := _should_show_modifier_chips(is_kill)
-	for chip in mod_row.get_children():
-		if chip.name == "ModChip":
-			var chip_text := (chip.get_child(0) as Label).text if chip.get_child_count() > 0 else ""
-			if chip_text.contains("KILL"):
-				chip.visible = true
-			else:
-				chip.visible = show_all
-	mod_row.visible = mod_row.get_child_count() > 0 and (
-		is_kill or show_all or _row_has_visible_chip(mod_row))
+	_apply_row_chip_visibility(mod_row)
 
 func _row_has_visible_chip(mod_row: HBoxContainer) -> bool:
 	for chip in mod_row.get_children():
@@ -689,10 +857,11 @@ func _make_target_row() -> VBoxContainer:
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_theme_constant_override("separation", 3)
 
-	var header_row := HBoxContainer.new()
-	header_row.name = "HeaderRow"
-	header_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	row.add_child(header_row)
+	var name_dmg_row := HBoxContainer.new()
+	name_dmg_row.name = "NameDmgRow"
+	name_dmg_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	name_dmg_row.add_theme_constant_override("separation", 4)
+	row.add_child(name_dmg_row)
 
 	var name_lbl := Label.new()
 	name_lbl.name = "TargetName"
@@ -700,22 +869,33 @@ func _make_target_row() -> VBoxContainer:
 	name_lbl.add_theme_font_size_override("font_size", 10)
 	name_lbl.modulate = Color(0.88, 0.89, 0.94)
 	name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	header_row.add_child(name_lbl)
+	name_dmg_row.add_child(name_lbl)
 
 	var dmg_lbl := Label.new()
 	dmg_lbl.name = "DamageValue"
 	dmg_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	dmg_lbl.add_theme_font_size_override("font_size", 20)
+	dmg_lbl.add_theme_font_size_override("font_size", 22)
 	dmg_lbl.modulate = UITheme.COLOR_DAMAGE_NORMAL
 	dmg_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	dmg_lbl.set_meta("displayed_dmg", -1)
-	header_row.add_child(dmg_lbl)
+	name_dmg_row.add_child(dmg_lbl)
 
 	var mod_row := HBoxContainer.new()
 	mod_row.name = "ModRow"
 	mod_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	mod_row.add_theme_constant_override("separation", 4)
 	row.add_child(mod_row)
+
+	var kill_lbl = Label.new()
+	kill_lbl.name = "KillLabel"
+	kill_lbl.text = "☠ KILL"
+	kill_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	kill_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	kill_lbl.add_theme_font_size_override("font_size", UITheme.FONT_XS * 2)
+	kill_lbl.modulate = UITheme.COLOR_DAMAGE_KILL
+	kill_lbl.visible = false
+	kill_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(kill_lbl)
 
 	return row
 
@@ -727,10 +907,18 @@ func _update_badge_previews(badge: Control, previews: Array) -> void:
 	var target_rows := dmg_box.find_child("TargetRows", true, false) as VBoxContainer
 	var total_row := dmg_box.find_child("TotalRow", true, false) as CanvasItem
 	var total_dmg := dmg_box.find_child("TotalDamage", true, false) as Label
+	var tgt_positions: Array[Vector2i] = []
+	for p in previews:
+		var tgt = p.get("target", null)
+		if tgt != null and "grid_pos" in tgt:
+			tgt_positions.append(tgt.grid_pos as Vector2i)
+	badge.set_meta("target_positions", tgt_positions)
 	if previews.is_empty():
 		dmg_box.visible = false
 		if dmg_sep:
 			dmg_sep.visible = false
+		var empty_skill = badge.get_meta("skill", null) as SkillData
+		_update_attack_type_label(badge, empty_skill, 1.0)
 		return
 	dmg_box.visible = true
 	if dmg_sep:
@@ -738,23 +926,43 @@ func _update_badge_previews(badge: Control, previews: Array) -> void:
 	var show_names := previews.size() > 1
 	_ensure_target_rows(target_rows, previews.size())
 	var total := 0
+	var total_base := 0
 	var is_heal = previews[0].get("is_heal", false)
+	var panel_tint = _preview_panel_tint(previews)
+	_apply_badge_panel_styles(badge, panel_tint)
+	var skill = badge.get_meta("skill", null) as SkillData
+	var weapon_mult = 1.0
+	if not is_heal and previews.size() > 0:
+		weapon_mult = previews[0].weapon_mult
+	badge.set_meta("last_weapon_mult", weapon_mult)
+	_update_attack_type_label(badge, skill, weapon_mult)
 	for i in previews.size():
 		_update_target_row(target_rows.get_child(i) as VBoxContainer, previews[i], show_names)
 		if is_heal:
 			total += previews[i].get("actual_heal", previews[i].get("heal", 0))
 		else:
 			total += previews[i].dmg
+			total_base += int(previews[i].get("base_power", 0))
+	var active_badge = _hero_skill_screen_popup if (
+		_hero_skill_screen_popup and is_instance_valid(_hero_skill_screen_popup)) else (
+		_smart_preview_badge if _smart_preview_badge and is_instance_valid(_smart_preview_badge) else null)
+	if active_badge and not tgt_positions.is_empty():
+		_position_badge_for_targets(active_badge, active_badge.get_meta(
+			"badge_fallback_grid", tgt_positions[0]))
 	if previews.size() > 1:
 		total_row.visible = true
 		if total_dmg:
 			total_dmg.text = ("+%d HEAL" % total) if is_heal else ("%d DMG" % total)
-			total_dmg.modulate = UITheme.COLOR_HEAL if is_heal else Color(0.95, 0.88, 0.55)
+			if is_heal:
+				total_dmg.modulate = UITheme.COLOR_HEAL
+			elif not is_heal and previews.size() > 0:
+				total_dmg.modulate = _weapon_mult_damage_color(previews[0].weapon_mult)
+			else:
+				total_dmg.modulate = Color(0.95, 0.88, 0.55)
 	else:
 		total_row.visible = false
 
 func _update_target_row(row: VBoxContainer, preview: Dictionary, show_name: bool) -> void:
-	var header_row := row.find_child("HeaderRow", true, false) as HBoxContainer
 	var name_lbl := row.find_child("TargetName", true, false) as Label
 	var dmg_lbl := row.find_child("DamageValue", true, false) as Label
 	var mod_row := row.find_child("ModRow", true, false) as HBoxContainer
@@ -768,11 +976,14 @@ func _update_target_row(row: VBoxContainer, preview: Dictionary, show_name: bool
 	if show_name:
 		dmg_lbl.size_flags_horizontal = Control.SIZE_SHRINK_END
 		dmg_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		dmg_lbl.add_theme_font_size_override("font_size", 20)
+		dmg_lbl.add_theme_font_size_override("font_size", 11)
 	else:
 		dmg_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		dmg_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		dmg_lbl.add_theme_font_size_override("font_size", 22)
+
+	var target_id: int = target.get_instance_id() if target else 0
+	var prev_target_id: int = int(dmg_lbl.get_meta("preview_target_id", -1))
 
 	var is_heal: bool = preview.get("is_heal", false)
 	if is_heal:
@@ -780,11 +991,14 @@ func _update_target_row(row: VBoxContainer, preview: Dictionary, show_name: bool
 		var actual: int = preview.get("actual_heal", heal_amt)
 		var new_val: int = actual
 		var old_val: int = int(dmg_lbl.get_meta("displayed_dmg", -1))
+		if target_id == prev_target_id and new_val == old_val and old_val >= 0:
+			dmg_lbl.modulate = UITheme.COLOR_HEAL
+			_apply_row_chip_visibility(mod_row)
+			return
+		dmg_lbl.set_meta("preview_target_id", target_id)
 		dmg_lbl.modulate = UITheme.COLOR_HEAL
 		dmg_lbl.set_meta("is_kill", false)
 		var label := "+%d HEAL" % actual
-		if actual < heal_amt:
-			label = "+%d HEAL" % actual
 		if old_val != new_val:
 			if old_val < 0:
 				dmg_lbl.text = label
@@ -794,60 +1008,82 @@ func _update_target_row(row: VBoxContainer, preview: Dictionary, show_name: bool
 		else:
 			dmg_lbl.text = label
 		for child in mod_row.get_children():
-			child.queue_free()
-		mod_row.add_child(_make_modifier_chip("%d HP" % heal_amt, UITheme.COLOR_HEAL))
+			mod_row.remove_child(child)
+			child.free()
+		mod_row.add_child(_make_modifier_chip("Base: %d HP" % heal_amt, UITheme.COLOR_HEAL))
 		if actual < heal_amt:
 			mod_row.add_child(_make_modifier_chip("capped", UITheme.COLOR_CHIP_MITIGATE))
-		_apply_row_chip_visibility(mod_row, false)
+		_apply_row_chip_visibility(mod_row)
 		return
 
+	var kill_lbl = row.find_child("KillLabel", true, false) as Label
 	var is_kill: bool = preview.is_kill
 	var new_dmg: int = preview.dmg
 	var old_dmg: int = int(dmg_lbl.get_meta("displayed_dmg", -1))
+	var dmg_color = _weapon_mult_damage_color(preview.weapon_mult)
+	if target_id == prev_target_id and new_dmg == old_dmg and old_dmg >= 0:
+		dmg_lbl.modulate = dmg_color
+		if kill_lbl:
+			kill_lbl.visible = is_kill
+		_refresh_target_row_mod_chips(mod_row, preview)
+		return
+	if target_id == prev_target_id and _damage_label_tweening_to(dmg_lbl, new_dmg):
+		dmg_lbl.modulate = dmg_color
+		if kill_lbl:
+			kill_lbl.visible = is_kill
+		_refresh_target_row_mod_chips(mod_row, preview)
+		return
+	dmg_lbl.set_meta("preview_target_id", target_id)
 	dmg_lbl.set_meta("is_kill", is_kill)
 	if not is_kill:
 		dmg_lbl.set_meta("kill_punch", false)
-	dmg_lbl.modulate = UITheme.COLOR_DAMAGE_KILL if is_kill else UITheme.COLOR_DAMAGE_NORMAL
+	dmg_lbl.modulate = dmg_color
 
+	var dmg_fmt = ("−%d" if show_name else "%d DMG") % new_dmg
 	if old_dmg != new_dmg:
 		if old_dmg < 0:
-			dmg_lbl.text = "%d DMG" % new_dmg
+			dmg_lbl.text = dmg_fmt
 			dmg_lbl.set_meta("displayed_dmg", new_dmg)
-			if is_kill:
-				_play_kill_punch(dmg_lbl)
-			else:
-				_play_value_punch(dmg_lbl)
+			_play_value_punch(dmg_lbl)
 		else:
-			_tween_damage_value(dmg_lbl, old_dmg, new_dmg, is_kill)
+			_tween_damage_value_fmt(dmg_lbl, old_dmg, new_dmg, show_name)
 	else:
-		dmg_lbl.text = "%d DMG" % new_dmg
+		dmg_lbl.text = dmg_fmt
 
+	if kill_lbl:
+		kill_lbl.visible = is_kill
+	_refresh_target_row_mod_chips(mod_row, preview)
+
+func _refresh_target_row_mod_chips(mod_row: HBoxContainer, preview: Dictionary) -> void:
 	for child in mod_row.get_children():
-		child.queue_free()
+		mod_row.remove_child(child)
+		child.free()
+	if preview.base_power > 0:
+		mod_row.add_child(_make_modifier_chip("Base DMG: %d" % preview.base_power, UITheme.COLOR_CHIP_POWER))
 	if preview.base_power > 0 and preview.weapon_mult != 1.0:
-		mod_row.add_child(_make_modifier_chip(str(preview.base_power), UITheme.COLOR_CHIP_POWER))
-		var mult_color := UITheme.COLOR_CHIP_ADV if preview.weapon_mult > 1.0 else UITheme.COLOR_CHIP_WEAK
-		var mult_tag := "ADV" if preview.weapon_mult > 1.0 else "WEAK"
+		var mult_color = UITheme.COLOR_CHIP_ADV if preview.weapon_mult > 1.0 else UITheme.COLOR_CHIP_WEAK
+		var mult_tag = "ADV" if preview.weapon_mult > 1.0 else "WEAK"
 		mod_row.add_child(_make_modifier_chip("×%.1f %s" % [preview.weapon_mult, mult_tag], mult_color))
-	elif preview.base_power > 0:
-		mod_row.add_child(_make_modifier_chip(str(preview.base_power), UITheme.COLOR_CHIP_POWER))
 	if preview.def_blocked > 0:
 		mod_row.add_child(_make_modifier_chip("−%d DEF" % preview.def_blocked, UITheme.COLOR_CHIP_MITIGATE))
 	if preview.cover_blocked > 0:
 		mod_row.add_child(_make_modifier_chip("−%d Cover" % preview.cover_blocked, UITheme.COLOR_CHIP_MITIGATE))
-	if is_kill:
-		mod_row.add_child(_make_modifier_chip("☠ KILL", UITheme.COLOR_DAMAGE_KILL))
-	_apply_row_chip_visibility(mod_row, is_kill)
+	_apply_row_chip_visibility(mod_row)
 
-func _apply_row_chip_visibility(mod_row: HBoxContainer, is_kill: bool) -> void:
-	var show_all := _should_show_modifier_chips(is_kill)
+func _damage_label_tweening_to(lbl: Label, to_val: int) -> bool:
+	if not lbl.has_meta("dmg_tween"):
+		return false
+	var tw: Tween = lbl.get_meta("dmg_tween")
+	if tw == null or not tw.is_valid():
+		return false
+	return int(lbl.get_meta("dmg_tween_target", -1)) == to_val
+
+func _apply_row_chip_visibility(mod_row: HBoxContainer) -> void:
+	var show_all := _detail_chips_visible
 	for chip in mod_row.get_children():
-		if chip.name != "ModChip":
-			continue
-		var chip_text := (chip.get_child(0) as Label).text if chip.get_child_count() > 0 else ""
-		chip.visible = chip_text.contains("KILL") or show_all
-	mod_row.visible = mod_row.get_child_count() > 0 and (
-		is_kill or show_all or _row_has_visible_chip(mod_row))
+		if chip.name == "ModChip":
+			chip.visible = show_all
+	mod_row.visible = show_all and mod_row.get_child_count() > 0
 
 func _tween_heal_value(lbl: Label, from_val: int, to_val: int) -> void:
 	if lbl.has_meta("dmg_tween"):
@@ -856,6 +1092,7 @@ func _tween_heal_value(lbl: Label, from_val: int, to_val: int) -> void:
 			old_tw.kill()
 	var tw := lbl.create_tween()
 	lbl.set_meta("dmg_tween", tw)
+	lbl.set_meta("dmg_tween_target", to_val)
 	tw.tween_method(
 		func(v: float) -> void: lbl.text = "+%d HEAL" % int(v),
 		float(from_val), float(to_val), 0.12)
@@ -871,6 +1108,7 @@ func _tween_damage_value(lbl: Label, from_val: int, to_val: int, is_kill: bool) 
 			old_tw.kill()
 	var tw := lbl.create_tween()
 	lbl.set_meta("dmg_tween", tw)
+	lbl.set_meta("dmg_tween_target", to_val)
 	tw.tween_method(
 		func(v: float) -> void: lbl.text = "%d DMG" % int(v),
 		float(from_val), float(to_val), 0.12)
@@ -880,6 +1118,30 @@ func _tween_damage_value(lbl: Label, from_val: int, to_val: int, is_kill: bool) 
 	_play_value_punch(lbl)
 	if is_kill:
 		tw.tween_callback(func() -> void: _play_kill_punch(lbl))
+
+func _tween_damage_value_fmt(lbl: Label, from_val: int, to_val: int, use_minus_fmt: bool) -> void:
+	if lbl.has_meta("dmg_tween"):
+		var old_tw: Tween = lbl.get_meta("dmg_tween")
+		if old_tw and old_tw.is_valid():
+			old_tw.kill()
+	var tw := lbl.create_tween()
+	lbl.set_meta("dmg_tween", tw)
+	lbl.set_meta("dmg_tween_target", to_val)
+	if use_minus_fmt:
+		tw.tween_method(
+			func(v: float) -> void: lbl.text = "−%d" % int(v),
+			float(from_val), float(to_val), 0.12)
+		tw.tween_callback(func() -> void:
+			lbl.set_meta("displayed_dmg", to_val)
+			lbl.text = "−%d" % to_val)
+	else:
+		tw.tween_method(
+			func(v: float) -> void: lbl.text = "%d DMG" % int(v),
+			float(from_val), float(to_val), 0.12)
+		tw.tween_callback(func() -> void:
+			lbl.set_meta("displayed_dmg", to_val)
+			lbl.text = "%d DMG" % to_val)
+	_play_value_punch(lbl)
 
 func _play_value_punch(lbl: Label) -> void:
 	if lbl.has_meta("value_punch_tween"):
@@ -923,31 +1185,33 @@ func _update_badge_identity(badge: Control, hero: HeroUnit, skill: SkillData,
 		skill_index: int, tint: Color, header: String) -> void:
 	var icon := badge.find_child("SkillIcon", true, false) as TextureRect
 	var name_lbl := badge.find_child("SkillName", true, false) as Label
+	var atk_type_lbl := badge.find_child("AttackTypeLabel", true, false) as Label
 	var hdr := badge.find_child("HeaderLabel", true, false) as Label
 	var caret := badge.find_child("BadgeCaret", true, false) as Label
 	var panel := badge.find_child("BadgePanel", true, false) as PanelContainer
 	if icon:
 		icon.texture = _skill_icon_texture(hero, skill_index, skill)
-		icon.modulate = tint
+		icon.modulate = Color.WHITE
 	if name_lbl:
 		name_lbl.text = skill.display_name
-		name_lbl.modulate = tint.lightened(0.15)
+		name_lbl.modulate = BADGE_SKILL_NAME_COLOR
+	if atk_type_lbl:
+		var mult = 1.0
+		if badge.has_meta("last_weapon_mult"):
+			mult = float(badge.get_meta("last_weapon_mult", 1.0))
+		atk_type_lbl.text = _attack_type_label_text(skill, mult)
+	var panel_tint = badge.get_meta("badge_panel_tint", tint) as Color
 	if hdr:
 		hdr.text = header
-	if caret:
-		caret.modulate = Color(tint.r, tint.g, tint.b, 0.8)
-	if panel:
-		panel.add_theme_stylebox_override("panel", UITheme.badge_panel_style(tint))
-	if hdr:
-		var header_strip := hdr.get_parent() as PanelContainer
-		if header_strip:
-			header_strip.add_theme_stylebox_override("panel", UITheme.badge_header_style(tint, header))
+	_apply_badge_panel_styles(badge, panel_tint)
+	badge.set_meta("skill", skill)
+	_update_badge_effects(badge, skill)
 	_play_badge_identity_fade(badge)
 
 func get_active_skill_tint() -> Color:
-	if _active_skill and _active_skill_index >= 0:
-		return _active_skill.get_display_tint(_active_skill_index)
-	return UITheme.COLOR_SKILL_RANGE
+	if _hero_skill_screen_popup and is_instance_valid(_hero_skill_screen_popup):
+		return _hero_skill_screen_popup.get_meta("badge_panel_tint", _weapon_mult_damage_color(1.0)) as Color
+	return _weapon_mult_damage_color(1.0)
 
 func hide_skill_bar() -> void:
 	for btn in _skill_buttons:
@@ -1098,6 +1362,7 @@ func clear_skills() -> void:
 func show_move_highlights(tiles: Array, grid: Node) -> void:
 	_free_list(_move_highlights)
 	_free_list(_cover_highlights)
+	_free_list(_move_outline)
 	_move_positions.clear()
 	for pos in tiles:
 		var is_cover = grid.has_method("get_cover_bonus") and grid.get_cover_bonus(pos) > 0
@@ -1105,15 +1370,20 @@ func show_move_highlights(tiles: Array, grid: Node) -> void:
 		var store := _cover_highlights if is_cover else _move_highlights
 		_add_highlight(pos, color, store, grid, HighlightStyle.FILL)
 		_move_positions.append(pos)
+	if not tiles.is_empty():
+		_add_range_outline(tiles, Color(0, 0, 0, 0.88), 2.0, _move_outline, grid)
 
-func show_target_highlights(tiles: Array, grid: Node, tint: Color = UITheme.COLOR_SKILL_RANGE) -> void:
+func show_target_highlights(tiles: Array, grid: Node, tint: Color = UITheme.COLOR_SKILL_RANGE, attack_type: int = -1) -> void:
 	_free_list(_skill_range_highlights)
 	_free_list(_move_skill_preview_highlights)
+	_free_list(_skill_outline)
 	_skill_range_positions.clear()
 	var color := Color(tint.r, tint.g, tint.b, 0.20)
 	for pos in tiles:
 		_add_highlight(pos, color, _skill_range_highlights, grid, HighlightStyle.FILL)
 		_skill_range_positions.append(pos)
+	if not tiles.is_empty():
+		_add_range_outline(tiles, _attack_type_outline_color(attack_type), 2.0, _skill_outline, grid)
 
 func show_valid_target_highlights(tiles: Array, grid: Node) -> void:
 	_free_list(_valid_target_highlights)
@@ -1164,7 +1434,7 @@ func show_smart_attack_preview(hero: HeroUnit, move_pos: Vector2i, target_pos: V
 	if hero == null or skill == null:
 		_clear_smart_preview_badge()
 		return
-	var tint := skill.get_display_tint(skill_index)
+	var tint := _weapon_mult_damage_color(1.0)
 	var hero_pos := hero.grid_pos
 	var cast_pos := move_pos
 	_smart_preview_tiles.append(cast_pos)
@@ -1175,7 +1445,6 @@ func show_smart_attack_preview(hero: HeroUnit, move_pos: Vector2i, target_pos: V
 			hero_pos, move_pos, grid, hero.movement_remaining + 4)
 		_add_preview_path_line(path, grid, UITheme.COLOR_MOVE_PATH, 3.5, true)
 		_add_highlight(move_pos, UITheme.COLOR_MOVE_DEST, _smart_preview_nodes, grid, HighlightStyle.FILL)
-		_add_smart_label(move_pos, "MOVE", UITheme.COLOR_MOVE_PATH, grid)
 
 	var strike_pts: Array[Vector2i] = [cast_pos, target_pos]
 	_add_preview_path_line(strike_pts, grid, Color(tint.r, tint.g, tint.b, 0.95), 4.5, false)
@@ -1202,17 +1471,19 @@ func show_smart_attack_preview(hero: HeroUnit, move_pos: Vector2i, target_pos: V
 		if prev_skill != skill_index:
 			_update_badge_identity(_smart_preview_badge, hero, skill, skill_index, tint, "WILL USE")
 			_smart_preview_badge.set_meta("skill_index", skill_index)
+		_smart_preview_badge.set_meta("hero_grid", cast_pos)
 		_update_badge_previews(_smart_preview_badge, previews)
-		_position_skill_badge(_smart_preview_badge, target_pos)
+		_position_badge_for_targets(_smart_preview_badge, target_pos)
 	else:
 		_clear_smart_preview_badge()
 		_smart_preview_badge = _create_skill_badge(
 			hero, skill, skill_index, tint, "WILL USE", previews)
 		_smart_preview_badge.set_meta("skill_index", skill_index)
+		_smart_preview_badge.set_meta("hero_grid", cast_pos)
 		_smart_cast_key = cast_key
 		if _screen_popup_layer:
 			_screen_popup_layer.add_child(_smart_preview_badge)
-			_position_skill_badge(_smart_preview_badge, target_pos)
+			_position_badge_for_targets(_smart_preview_badge, target_pos)
 			_play_badge_spawn(_smart_preview_badge)
 
 func _add_preview_path_line(path: Array, grid: Node, color: Color, width: float,
@@ -1462,7 +1733,9 @@ func _add_status_icon(unit: Node, icon_text: String, color: Color, _grid: Node) 
 
 func clear_highlights() -> void:
 	_free_list(_move_highlights)
+	_free_list(_move_outline)
 	_free_list(_skill_range_highlights)
+	_free_list(_skill_outline)
 	_free_list(_valid_target_highlights)
 	_free_list(_cursor_aoe_highlights)
 	_free_list(_move_skill_preview_highlights)
@@ -1551,3 +1824,225 @@ func _free_list(store: Array) -> void:
 		if is_instance_valid(h):
 			h.queue_free()
 	store.clear()
+
+# --- Range perimeter outline ---
+
+func _add_range_outline(tiles: Array, color: Color, thickness: float, store: Array, grid: Node) -> void:
+	var tile_set: Dictionary = {}
+	for pos in tiles:
+		tile_set[pos] = true
+	var half = TILE_SIZE * 0.5
+	for pos in tiles:
+		var world_center = grid.grid_to_world(pos)
+		if not tile_set.has(Vector2i(pos.x, pos.y - 1)):
+			_add_range_line(world_center + Vector2(-half, -half),
+				world_center + Vector2(half, -half), color, thickness, store)
+		if not tile_set.has(Vector2i(pos.x, pos.y + 1)):
+			_add_range_line(world_center + Vector2(-half, half),
+				world_center + Vector2(half, half), color, thickness, store)
+		if not tile_set.has(Vector2i(pos.x - 1, pos.y)):
+			_add_range_line(world_center + Vector2(-half, -half),
+				world_center + Vector2(-half, half), color, thickness, store)
+		if not tile_set.has(Vector2i(pos.x + 1, pos.y)):
+			_add_range_line(world_center + Vector2(half, -half),
+				world_center + Vector2(half, half), color, thickness, store)
+
+func _add_range_line(a: Vector2, b: Vector2, color: Color, thickness: float, store: Array) -> void:
+	var line = Line2D.new()
+	line.points = PackedVector2Array([a, b])
+	line.default_color = color
+	line.width = thickness
+	line.antialiased = false
+	line.z_index = 5
+	highlight_layer.add_child(line)
+	store.append(line)
+
+# --- Skill type string ---
+
+func _attack_type_outline_color(atype: int) -> Color:
+	match atype:
+		WeaponTriangle.Type.RANGE:
+			return Color(0.25, 0.85, 0.35, 0.9)
+		WeaponTriangle.Type.MAGE:
+			return Color(0.3, 0.5, 1.0, 0.9)
+		WeaponTriangle.Type.MELEE:
+			return Color(0.9, 0.2, 0.2, 0.9)
+		_:
+			return Color(0, 0, 0, 0.88)
+
+func _create_weakness_panel() -> Control:
+	var panel = PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_theme_stylebox_override("panel", UITheme.badge_panel_style(Color(0.55, 0.58, 0.72)))
+	var col = VBoxContainer.new()
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_theme_constant_override("separation", 5)
+	panel.add_child(col)
+	col.add_child(_make_badge_separator())
+	var title = Label.new()
+	title.text = "Damage Advantages"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+	title.modulate = BADGE_SKILL_NAME_COLOR
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(title)
+	col.add_child(_make_badge_separator())
+	var matchups = [
+		["Mage", "Melee", Color(0.3, 0.5, 1.0), Color(0.9, 0.2, 0.2)],
+		["Melee", "Range", Color(0.9, 0.2, 0.2), Color(0.25, 0.85, 0.35)],
+		["Range", "Mage", Color(0.25, 0.85, 0.35), Color(0.3, 0.5, 1.0)],
+	]
+	for m in matchups:
+		var row = HBoxContainer.new()
+		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_theme_constant_override("separation", 5)
+		col.add_child(row)
+		row.add_child(_make_modifier_chip(m[0] as String, m[2] as Color))
+		var arrow = Label.new()
+		arrow.text = ">"
+		arrow.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+		arrow.modulate = BADGE_SKILL_NAME_COLOR
+		arrow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		row.add_child(arrow)
+		row.add_child(_make_modifier_chip(m[1] as String, m[3] as Color))
+	return panel
+
+func _get_skill_type_string(skill: SkillData) -> String:
+	if skill == null:
+		return ""
+	if skill.is_healing():
+		return "Heal"
+	if skill.target_type == SkillData.TargetType.SELF:
+		return "Self Buff"
+	if skill.target_type == SkillData.TargetType.ALLY_SINGLE and skill.base_damage <= 0:
+		return "Support"
+	match skill.attack_type_override:
+		WeaponTriangle.Type.MAGE:
+			return "Mage"
+		WeaponTriangle.Type.RANGE:
+			return "Ranged"
+		_:
+			return "Melee"
+
+func _attack_type_label_text(skill: SkillData, weapon_mult: float = 1.0) -> String:
+	if skill == null:
+		return ""
+	var base := _get_skill_type_string(skill)
+	if skill.is_healing() or skill.is_buff():
+		return base
+	if weapon_mult > 1.0:
+		return "%s (Advantage)" % base
+	if weapon_mult < 1.0:
+		return "%s (Weakened)" % base
+	return base
+
+func _update_attack_type_label(badge: Control, skill: SkillData, weapon_mult: float) -> void:
+	var atk_type_lbl = badge.find_child("AttackTypeLabel", true, false) as Label
+	if atk_type_lbl == null or skill == null:
+		return
+	atk_type_lbl.text = _attack_type_label_text(skill, weapon_mult)
+
+# --- Buff/debuff effects in badge ---
+
+func _update_badge_effects(badge: Control, skill: SkillData) -> void:
+	var eff_list = BuffDebuff.get_effects_for_skill(skill) if skill != null else []
+	var tint = badge.get_meta("badge_panel_tint", _weapon_mult_damage_color(1.0)) as Color
+	var skill_id: StringName = skill.id if skill != null else &""
+	var last_skill: StringName = badge.get_meta("effects_panel_skill", &"") as StringName
+	if last_skill == skill_id and _effects_desc_panel and is_instance_valid(_effects_desc_panel):
+		_sync_effects_panel_tint(tint)
+		return
+	badge.set_meta("effects_panel_skill", skill_id)
+	_rebuild_effects_desc_panel(eff_list, tint)
+
+func _free_effects_desc_panel() -> void:
+	if _effects_desc_panel and is_instance_valid(_effects_desc_panel):
+		_effects_desc_panel.queue_free()
+	_effects_desc_panel = null
+
+func _rebuild_effects_desc_panel(eff_list: Array, tint: Color) -> void:
+	_free_effects_desc_panel()
+	if eff_list.is_empty():
+		return
+	_effects_desc_panel = _create_effects_desc_panel(eff_list, tint)
+	if _screen_popup_layer and _effects_desc_panel:
+		_screen_popup_layer.add_child(_effects_desc_panel)
+		_relayout_effects_panel()
+
+func _create_effects_desc_panel(eff_list: Array, tint: Color) -> Control:
+	var panel = PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.clip_contents = false
+	panel.custom_minimum_size = Vector2(148, 0)
+	panel.add_theme_stylebox_override("panel", UITheme.badge_panel_style(tint))
+
+	var col = VBoxContainer.new()
+	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_theme_constant_override("separation", 4)
+	panel.add_child(col)
+
+	col.add_child(_make_badge_separator())
+
+	var title = Label.new()
+	title.text = "STATUS EFFECTS"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+	title.modulate = BADGE_SKILL_NAME_COLOR
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	col.add_child(title)
+
+	col.add_child(_make_badge_separator())
+
+	var detail_labels: Array[Label] = []
+	for eff in eff_list:
+		var eff_data = eff as StatusEffectData
+		if eff_data == null:
+			continue
+		var tag_row = HBoxContainer.new()
+		tag_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tag_row.add_theme_constant_override("separation", 4)
+		col.add_child(tag_row)
+		tag_row.add_child(_make_modifier_chip(eff_data.display_name, eff_data.color))
+		var dur_lbl = Label.new()
+		dur_lbl.text = "%d turns" % eff_data.duration
+		dur_lbl.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+		dur_lbl.modulate = BADGE_SKILL_NAME_COLOR
+		dur_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		dur_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		dur_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		tag_row.add_child(dur_lbl)
+		var target_lbl = Label.new()
+		target_lbl.name = "EffectTarget"
+		target_lbl.text = "Enemy" if eff_data.is_debuff else "Self"
+		target_lbl.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+		target_lbl.modulate = UITheme.ENEMY_ACCENT if eff_data.is_debuff else UITheme.HERO_ACCENT
+		target_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(target_lbl)
+		var desc_lbl = Label.new()
+		desc_lbl.name = "EffectDetail_%s" % eff_data.id
+		desc_lbl.text = eff_data.get_detail_text()
+		desc_lbl.add_theme_font_size_override("font_size", UITheme.FONT_XS)
+		desc_lbl.modulate = BADGE_SKILL_NAME_COLOR
+		desc_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		desc_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		desc_lbl.custom_minimum_size = Vector2(130, 0)
+		desc_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		desc_lbl.visible = _detail_chips_visible
+		col.add_child(desc_lbl)
+		detail_labels.append(desc_lbl)
+		col.add_child(_make_badge_separator())
+
+	panel.set_meta("effect_detail_labels", detail_labels)
+	return panel
+
+func _relayout_effects_panel() -> void:
+	if _effects_desc_panel == null or not is_instance_valid(_effects_desc_panel):
+		return
+	var badge: Control = null
+	if _hero_skill_screen_popup and is_instance_valid(_hero_skill_screen_popup):
+		badge = _hero_skill_screen_popup
+	elif _smart_preview_badge and is_instance_valid(_smart_preview_badge):
+		badge = _smart_preview_badge
+	if badge == null:
+		return
+	_layout_attack_popups(badge)

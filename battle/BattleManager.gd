@@ -1,11 +1,12 @@
 class_name BattleManager
 extends Node
 
-enum State { HERO_TURN, ENEMY_TURN, GAME_OVER }
+enum State { HERO_TURN, ENEMY_TURN, GAME_OVER, PLACEMENT }
 enum HeroPhase { AWAIT_MOVE, AWAIT_SKILL_SELECT, AWAIT_SKILL }
 enum SkillState { AVAILABLE, NO_RANGE, USED }
 
 signal state_changed(new_state: State)
+signal placement_started
 signal hero_activated(hero: HeroUnit)
 signal hero_skills_updated(hero: HeroUnit)
 signal victory_achieved
@@ -42,6 +43,7 @@ var _last_skill_by_hero: Dictionary = {}
 var smart_skill_preference: int = -1
 var _enemy_wave_size: int = 0
 var _enemy_wave_respawn_scheduled: bool = false
+var _selected_placement_hero: HeroUnit = null
 
 var _unit_scene := preload("res://battle/units/Unit.tscn")
 var _hero_script := preload("res://battle/units/HeroUnit.gd")
@@ -55,16 +57,35 @@ func setup(p_grid: Grid, p_units_layer: Node2D, p_hud: BattleHUD = null) -> void
 	Combat.damage_dealt.connect(_on_combat_damage_dealt)
 	Combat.passive_triggered.connect(_on_passive_triggered)
 	_spawn_units()
-	_begin_round()
+	_begin_placement()
 
 func _get_hero_spawn_positions(count: int) -> Array[Vector2i]:
-	match count:
-		1: return [Vector2i(7, 13)]
-		2: return [Vector2i(6, 13), Vector2i(9, 13)]
-		3: return [Vector2i(5, 13), Vector2i(7, 13), Vector2i(10, 13)]
-		_: return [Vector2i(4, 13), Vector2i(6, 13), Vector2i(9, 13), Vector2i(11, 13)]
+	var candidates: Array[Vector2i] = []
+	var room = RoomLibrary.active_room as RoomData
+	if room != null:
+		var rect = room.hero_spawn
+		for x in range(rect.position.x, rect.position.x + rect.size.x):
+			for y in range(rect.position.y, rect.position.y + rect.size.y):
+				var pos = Vector2i(x, y)
+				if grid.is_in_bounds(pos) and grid.is_passable(pos):
+					candidates.append(pos)
+	# Fallback: bottom half of grid
+	if candidates.size() < count:
+		for x in range(grid.GRID_W):
+			for y in range(grid.GRID_H / 2, grid.GRID_H):
+				var pos = Vector2i(x, y)
+				if grid.is_in_bounds(pos) and grid.is_passable(pos) and not candidates.has(pos):
+					candidates.append(pos)
+	candidates.shuffle()
+	var result: Array[Vector2i] = []
+	for i in mini(count, candidates.size()):
+		result.append(candidates[i])
+	return result
 
 func _spawn_units() -> void:
+	# Seed RNG with room index for deterministic hero/enemy placement per level
+	seed(RoomLibrary.current_room_index)
+
 	var heroes_to_spawn: Array[HeroData] = []
 	for data in Heroes.active_heroes:
 		if PlayerInventory.hero_ko.get(data.id, false):
@@ -86,14 +107,84 @@ func _spawn_units() -> void:
 		grid.place_unit(unit, hero_starts[i])
 		hero_units.append(unit)
 
-	var target_enemy_count = maxi(2, _enemy_wave_size)
 	var spawn_tiles = _collect_enemy_spawn_tiles()
-	for i in mini(target_enemy_count, spawn_tiles.size()):
-		var data = Enemies.pick_random_enemy()
-		if data == null:
-			break
-		_create_enemy_unit(data, spawn_tiles[i])
+	var room = RoomLibrary.active_room as RoomData
+
+	if room != null and not room.enemy_spawns.is_empty():
+		# Spawn the enemies defined in the room
+		var tile_idx = 0
+		for entry in room.enemy_spawns:
+			var cfg = entry as EnemySpawnConfig
+			if cfg == null or cfg.enemy == null:
+				continue
+			for _i in cfg.count:
+				if tile_idx >= spawn_tiles.size():
+					break
+				_create_enemy_unit(cfg.enemy, spawn_tiles[tile_idx])
+				tile_idx += 1
+	else:
+		# Fallback: random escalating enemies
+		var target_enemy_count = maxi(2, _enemy_wave_size)
+		for i in mini(target_enemy_count, spawn_tiles.size()):
+			var data = Enemies.pick_random_enemy()
+			if data == null:
+				break
+			_create_enemy_unit(data, spawn_tiles[i])
+
 	_enemy_wave_size = enemy_units.size()
+
+# --- Placement phase ---
+
+func _begin_placement() -> void:
+	state = State.PLACEMENT
+	state_changed.emit(State.PLACEMENT)
+	_selected_placement_hero = null
+	movement_tiles_updated.emit([])
+	turn_order_updated.emit([])
+	skill_bar_requested.emit(null, [], -1)
+	radial_menu_requested.emit(Vector2.ZERO, [], [])
+	placement_started.emit()
+
+func start_combat() -> void:
+	if state != State.PLACEMENT:
+		return
+	_selected_placement_hero = null
+	movement_tiles_updated.emit([])
+	_begin_round()
+
+func on_placement_tile_clicked(grid_pos: Vector2i) -> void:
+	if state != State.PLACEMENT:
+		return
+	var unit = grid.get_unit_at(grid_pos)
+	if unit != null and unit.is_in_group("heroes"):
+		_selected_placement_hero = unit as HeroUnit
+		movement_tiles_updated.emit(_get_placement_move_tiles())
+		return
+	if _selected_placement_hero != null:
+		var valid = _get_placement_move_tiles()
+		if valid.has(grid_pos):
+			grid.move_unit(_selected_placement_hero, grid_pos)
+			_selected_placement_hero.position = grid.grid_to_world(grid_pos)
+			_selected_placement_hero = null
+			movement_tiles_updated.emit([])
+		else:
+			_selected_placement_hero = null
+			movement_tiles_updated.emit([])
+
+func _get_placement_move_tiles() -> Array[Vector2i]:
+	var result: Array[Vector2i] = []
+	var room = RoomLibrary.active_room as RoomData
+	if room == null:
+		return result
+	var rect = room.hero_spawn
+	for x in range(rect.position.x, rect.position.x + rect.size.x):
+		for y in range(rect.position.y, rect.position.y + rect.size.y):
+			var pos = Vector2i(x, y)
+			if not grid.is_in_bounds(pos) or not grid.is_passable(pos):
+				continue
+			if grid.is_empty(pos) or grid.get_unit_at(pos) == _selected_placement_hero:
+				result.append(pos)
+	return result
 
 # --- Round / initiative ---
 
@@ -795,11 +886,21 @@ func _run_enemy_wave_respawn() -> void:
 
 func _collect_enemy_spawn_tiles() -> Array[Vector2i]:
 	var tiles: Array[Vector2i] = []
-	for x in range(grid.GRID_W):
-		for y in range(grid.GRID_ROW_MIN, grid.GRID_H / 2):
-			var pos = Vector2i(x, y)
-			if grid.is_in_bounds(pos) and grid.is_passable(pos) and grid.is_empty(pos):
-				tiles.append(pos)
+	var room = RoomLibrary.active_room as RoomData
+	if room != null:
+		var rect = room.enemy_spawn
+		for x in range(rect.position.x, rect.position.x + rect.size.x):
+			for y in range(rect.position.y, rect.position.y + rect.size.y):
+				var pos = Vector2i(x, y)
+				if grid.is_in_bounds(pos) and grid.is_passable(pos) and grid.is_empty(pos):
+					tiles.append(pos)
+	# Fallback: top half of grid
+	if tiles.is_empty():
+		for x in range(grid.GRID_W):
+			for y in range(grid.GRID_ROW_MIN, grid.GRID_H / 2):
+				var pos = Vector2i(x, y)
+				if grid.is_in_bounds(pos) and grid.is_passable(pos) and grid.is_empty(pos):
+					tiles.append(pos)
 	tiles.shuffle()
 	return tiles
 
@@ -871,11 +972,12 @@ func start_next_round() -> void:
 		hud.clear_unit_glows()
 		hud.clear_active_actor()
 		hud.hide_skill_bar()
+	# Advance to next room in sequence and reload the grid
+	RoomLibrary.pick_next_room()
+	grid.reload_room()
 	get_tree().paused = false
-	state = State.HERO_TURN
-	state_changed.emit(State.HERO_TURN)
 	_spawn_units()
-	_begin_round()
+	_begin_placement()
 
 func _is_move_tile(pos: Vector2i) -> bool:
 	return Combat.get_movement_tiles(active_hero, grid).has(pos)

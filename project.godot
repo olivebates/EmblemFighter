@@ -26,6 +26,8 @@ Combat="*res://autoloads/Combat.gd"
 Utils="*res://autoloads/Utils.gd"
 UITheme="*res://autoloads/UITheme.gd"
 PlayerInventory="*res://autoloads/PlayerInventory.gd"
+RoomLibrary="*res://autoloads/RoomLibrary.gd"
+BuffDebuff="*res://autoloads/BuffDebuff.gd"
 
 [display]
 
