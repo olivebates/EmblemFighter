@@ -11,3 +11,7 @@ base_atk = 14
 base_def = 12
 base_spd = 2
 attack_type = 0
+op_buff_name = "Fortress"
+op_buff_description = "DEF permanently +15"
+op_buff_type = "def_flat"
+op_buff_value = 15.0

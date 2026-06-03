@@ -11,4 +11,6 @@ icon_tint = Color(1, 1, 1, 1)
 range = 1
 base_damage = -20.0
 target_type = 2
-use_type_override = false
+attack_type_override = 0
+use_type_override = true
+mana_cost = 2

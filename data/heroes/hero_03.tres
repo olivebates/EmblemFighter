@@ -11,3 +11,7 @@ base_atk = 15
 base_def = 6
 base_spd = 4
 attack_type = 1
+op_buff_name = "Deadeye"
+op_buff_description = "Every attack is a critical hit"
+op_buff_type = "crit_always"
+op_buff_value = 1.0

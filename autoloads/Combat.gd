@@ -18,12 +18,18 @@ func execute_skill(caster: Node, skill: SkillData, target_pos: Vector2i, grid: N
 
 func apply_skill_to_target(caster: Node, skill: SkillData, target: Node, grid: Node) -> Dictionary:
 	if skill.base_damage < 0:
-		var heal := int(abs(skill.base_damage))
+		var heal := int(abs(skill.eff_damage()))
 		target.hp = min(target.hp + heal, target.max_hp)
 		target.update_hp_bar()
 		damage_dealt.emit(target, -heal, false, 1.0)
 		return {heal = heal}
-	var result := _skill_damage(caster, skill, target, grid, true)
+	var result = _skill_damage(caster, skill, target, grid, true)
+	var reduction = target.damage_reduction if "damage_reduction" in target else 0.0
+	if reduction > 0.0:
+		result.dmg = max(1, int(result.dmg * (1.0 - reduction)))
+	var blk = minf(0.3, target.block_pct) if "block_pct" in target else 0.0
+	if blk > 0.0:
+		result.dmg = max(1, result.dmg - ceili(result.dmg * blk))
 	target.hp -= result.dmg
 	target.update_hp_bar()
 	damage_dealt.emit(target, result.dmg, result.is_crit, result.weapon_mult)
@@ -36,6 +42,9 @@ func apply_skill_to_target(caster: Node, skill: SkillData, target: Node, grid: N
 
 func preview_damage(caster: Node, skill: SkillData, target: Node, grid: Node) -> Dictionary:
 	var values := _compute_damage_values(caster, skill, target, grid)
+	var blk = minf(0.3, target.block_pct) if "block_pct" in target else 0.0
+	if blk > 0.0:
+		values.dmg = max(1, values.dmg - ceili(values.dmg * blk))
 	var max_dmg = values.dmg
 	if "crit_chance" in caster and caster.crit_chance > 0.0:
 		max_dmg = int(values.dmg * 1.5)
@@ -53,7 +62,7 @@ func preview_damage(caster: Node, skill: SkillData, target: Node, grid: Node) ->
 	}
 
 func preview_heal(_caster: Node, skill: SkillData, target: Node) -> Dictionary:
-	var amount := int(abs(skill.base_damage))
+	var amount := int(abs(skill.eff_damage()))
 	var missing = target.max_hp - target.hp
 	return {
 		"heal": amount,
@@ -258,13 +267,13 @@ func can_use_skill_with_movement(caster: Node, skill: SkillData, grid: Node) -> 
 	return false
 
 func _compute_damage_values(caster: Node, skill: SkillData, target: Node, grid: Node) -> Dictionary:
-	var atk_type: WeaponTriangle.Type = caster.attack_type
-	if skill.use_type_override:
-		atk_type = skill.attack_type_override
-	var base_power = skill.base_damage + caster.get_atk()
+	# Skill's own attack type drives the weapon triangle — heroes have no inherent type
+	var atk_type: WeaponTriangle.Type = skill.attack_type_override
+	var base_power = skill.eff_damage() + caster.get_atk()
 	var weapon_mult := WeaponTriangle.get_multiplier(atk_type, target.attack_type)
 	var after_mult := int(base_power * weapon_mult)
-	var def_blocked = target.get_def()
+	var pierce = int(caster.armor_pierce) if "armor_pierce" in caster else 0
+	var def_blocked = max(0, target.get_def() - pierce)
 	var after_def = after_mult - def_blocked
 	var cover = grid.get_cover_bonus(target.grid_pos) if grid.has_method("get_cover_bonus") else 0
 	var cover_blocked := 0
@@ -384,96 +393,92 @@ func _get_targets(caster: Node, skill: SkillData, target_pos: Vector2i, grid: No
 	return candidates
 
 func _fire_passive_on_hit(caster: Node, target: Node, dmg: int) -> void:
-	if not caster.has_method("get_passive"):
+	if not caster.has_method("get_passives"):
 		return
-	var passive: PassiveData = caster.get_passive()
-	if passive == null:
-		return
-	match passive.trigger_event:
-		PassiveData.TriggerEvent.ON_HIT:
-			match passive.effect_type:
-				PassiveData.EffectType.COUNTER_ATTACK:
-					target.hp -= int(passive.effect_value)
-					target.update_hp_bar()
-					passive_triggered.emit(caster, "Thorns!", Color(0.9, 0.4, 0.2))
-				PassiveData.EffectType.DAMAGE_BOOST:
-					caster.temp_atk_bonus += int(passive.effect_value)
-					passive_triggered.emit(caster, "+%d ATK" % int(passive.effect_value), Color(0.4, 0.7, 1.0))
+	for passive in caster.get_passives():
+		if passive == null:
+			continue
+		match passive.trigger_event:
+			PassiveData.TriggerEvent.ON_HIT:
+				match passive.effect_type:
+					PassiveData.EffectType.COUNTER_ATTACK:
+						target.hp -= int(passive.eff_value())
+						target.update_hp_bar()
+						passive_triggered.emit(caster, "Thorns!", Color(0.9, 0.4, 0.2))
+					PassiveData.EffectType.DAMAGE_BOOST:
+						caster.temp_atk_bonus += int(passive.eff_value())
+						passive_triggered.emit(caster, "+%d ATK" % int(passive.eff_value()), Color(0.4, 0.7, 1.0))
 
 func fire_passive_on_damaged(target: Node, attacker: Node, dmg: int) -> void:
 	_fire_passive_on_damaged(target, attacker, dmg)
 
 func _fire_passive_on_damaged(target: Node, attacker: Node, dmg: int) -> void:
-	if not target.has_method("get_passive"):
+	if not target.has_method("get_passives"):
 		return
-	var passive: PassiveData = target.get_passive()
-	if passive == null:
-		return
-	if passive.trigger_event != PassiveData.TriggerEvent.ON_DAMAGED:
-		return
-	match passive.effect_type:
-		PassiveData.EffectType.COUNTER_ATTACK:
-			if is_instance_valid(attacker) and attacker.hp > 0:
-				attacker.hp -= int(passive.effect_value)
-				attacker.update_hp_bar()
-				damage_dealt.emit(attacker, int(passive.effect_value), false, 1.0)
-				passive_triggered.emit(target, "Retaliate!", Color(1.0, 0.5, 0.2))
-				if attacker.hp <= 0:
-					unit_died.emit(attacker)
-		PassiveData.EffectType.STAT_BUFF:
-			target.temp_atk_bonus += int(passive.effect_value)
-			passive_triggered.emit(target, "+%d ATK" % int(passive.effect_value), Color(0.4, 0.7, 1.0))
-		PassiveData.EffectType.DAMAGE_BOOST:
-			target.temp_atk_bonus += int(passive.effect_value)
-			passive_triggered.emit(target, "+%d ATK" % int(passive.effect_value), Color(0.4, 0.7, 1.0))
+	for passive in target.get_passives():
+		if passive == null or passive.trigger_event != PassiveData.TriggerEvent.ON_DAMAGED:
+			continue
+		match passive.effect_type:
+			PassiveData.EffectType.COUNTER_ATTACK:
+				if is_instance_valid(attacker) and attacker.hp > 0:
+					attacker.hp -= int(passive.eff_value())
+					attacker.update_hp_bar()
+					damage_dealt.emit(attacker, int(passive.eff_value()), false, 1.0)
+					passive_triggered.emit(target, "Retaliate!", Color(1.0, 0.5, 0.2))
+					if attacker.hp <= 0:
+						unit_died.emit(attacker)
+			PassiveData.EffectType.STAT_BUFF:
+				target.temp_atk_bonus += int(passive.eff_value())
+				passive_triggered.emit(target, "+%d ATK" % int(passive.eff_value()), Color(0.4, 0.7, 1.0))
+			PassiveData.EffectType.DAMAGE_BOOST:
+				target.temp_atk_bonus += int(passive.eff_value())
+				passive_triggered.emit(target, "+%d ATK" % int(passive.eff_value()), Color(0.4, 0.7, 1.0))
 
 func _fire_passive_on_kill(caster: Node, _target: Node) -> void:
-	if not caster.has_method("get_passive"):
+	if not caster.has_method("get_passives"):
 		return
-	var passive: PassiveData = caster.get_passive()
-	if passive == null:
-		return
-	if passive.trigger_event == PassiveData.TriggerEvent.ON_KILL:
-		if passive.effect_type == PassiveData.EffectType.DAMAGE_BOOST:
-			caster.temp_atk_bonus += int(passive.effect_value)
-			passive_triggered.emit(caster, "+%d ATK" % int(passive.effect_value), Color(1.0, 0.85, 0.2))
+	for passive in caster.get_passives():
+		if passive == null:
+			continue
+		if passive.trigger_event == PassiveData.TriggerEvent.ON_KILL:
+			if passive.effect_type == PassiveData.EffectType.DAMAGE_BOOST:
+				caster.temp_atk_bonus += int(passive.eff_value())
+				passive_triggered.emit(caster, "+%d ATK" % int(passive.eff_value()), Color(1.0, 0.85, 0.2))
 
 func fire_passive_turn_start(unit: Node) -> void:
-	if not unit.has_method("get_passive"):
+	if not unit.has_method("get_passives"):
 		return
-	var passive: PassiveData = unit.get_passive()
-	if passive == null:
-		return
-	match passive.trigger_event:
-		PassiveData.TriggerEvent.ON_TURN_START:
-			match passive.effect_type:
-				PassiveData.EffectType.REGEN:
-					var amount := int(passive.effect_value)
-					unit.hp = min(unit.hp + amount, unit.max_hp)
-					unit.update_hp_bar()
-					passive_triggered.emit(unit, "+%d HP" % amount, Color(0.2, 1.0, 0.5))
-					if unit.has_method("play_heal_animation"):
-						unit.play_heal_animation()
-				PassiveData.EffectType.STAT_BUFF:
-					unit.temp_atk_bonus += int(passive.effect_value)
-					passive_triggered.emit(unit, "+%d ATK" % int(passive.effect_value), Color(0.4, 0.7, 1.0))
-					if unit.has_method("play_buff_animation"):
-						unit.play_buff_animation()
+	for passive in unit.get_passives():
+		if passive == null:
+			continue
+		match passive.trigger_event:
+			PassiveData.TriggerEvent.ON_TURN_START:
+				match passive.effect_type:
+					PassiveData.EffectType.REGEN:
+						var amount := int(passive.eff_value())
+						unit.hp = min(unit.hp + amount, unit.max_hp)
+						unit.update_hp_bar()
+						passive_triggered.emit(unit, "+%d HP" % amount, Color(0.2, 1.0, 0.5))
+						if unit.has_method("play_heal_animation"):
+							unit.play_heal_animation()
+					PassiveData.EffectType.STAT_BUFF:
+						unit.temp_atk_bonus += int(passive.eff_value())
+						passive_triggered.emit(unit, "+%d ATK" % int(passive.eff_value()), Color(0.4, 0.7, 1.0))
+						if unit.has_method("play_buff_animation"):
+							unit.play_buff_animation()
 
 func fire_passive_adjacency(unit: Node, adjacent_allies: Array) -> void:
-	if adjacent_allies.is_empty():
+	if adjacent_allies.is_empty() or not unit.has_method("get_passives"):
 		return
-	if not unit.has_method("get_passive"):
-		return
-	var passive: PassiveData = unit.get_passive()
-	if passive == null:
-		return
-	if passive.trigger_event == PassiveData.TriggerEvent.ON_ADJACENT_ALLY:
-		if passive.effect_type == PassiveData.EffectType.STAT_BUFF:
-			unit.temp_atk_bonus += int(passive.effect_value)
-			passive_triggered.emit(unit, "Linked! +%d ATK" % int(passive.effect_value), Color(0.5, 0.9, 1.0))
-			if unit.has_method("play_buff_animation"):
-				unit.play_buff_animation()
+	for passive in unit.get_passives():
+		if passive == null:
+			continue
+		if passive.trigger_event == PassiveData.TriggerEvent.ON_ADJACENT_ALLY:
+			if passive.effect_type == PassiveData.EffectType.STAT_BUFF:
+				unit.temp_atk_bonus += int(passive.eff_value())
+				passive_triggered.emit(unit, "Linked! +%d ATK" % int(passive.eff_value()), Color(0.5, 0.9, 1.0))
+				if unit.has_method("play_buff_animation"):
+					unit.play_buff_animation()
 
 func _bfs_reachable(origin: Vector2i, spd: int, grid: Node, excluded: Array[Vector2i]) -> Array[Vector2i]:
 	var visited: Dictionary = {}

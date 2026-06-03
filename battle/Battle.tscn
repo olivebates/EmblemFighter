@@ -1,9 +1,9 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=5 format=3 uid="uid://b20yuqvuaf3m4"]
 
-[ext_resource type="Script" path="res://battle/Battle.gd" id="1"]
-[ext_resource type="Script" path="res://battle/Grid.gd" id="2"]
-[ext_resource type="Script" path="res://battle/BattleManager.gd" id="3"]
-[ext_resource type="PackedScene" uid="" path="res://ui/BattleHUD.tscn" id="4"]
+[ext_resource type="Script" uid="uid://b6763edfu6xb" path="res://battle/Battle.gd" id="1"]
+[ext_resource type="Script" uid="uid://dsjx2jmh50epe" path="res://battle/Grid.gd" id="2"]
+[ext_resource type="Script" uid="uid://ji0rcxt5dyyd" path="res://battle/BattleManager.gd" id="3"]
+[ext_resource type="PackedScene" path="res://ui/BattleHUD.tscn" id="4"]
 
 [node name="Battle" type="Node2D"]
 script = ExtResource("1")
@@ -16,7 +16,12 @@ script = ExtResource("2")
 [node name="UnitsLayer" type="Node2D" parent="."]
 z_index = 1
 
+[node name="HighlightLayer" type="Node2D" parent="."]
+z_index = 2
+
 [node name="BattleManager" type="Node" parent="."]
 script = ExtResource("3")
+
+[node name="Camera2D" type="Camera2D" parent="."]
 
 [node name="BattleHUD" parent="." instance=ExtResource("4")]

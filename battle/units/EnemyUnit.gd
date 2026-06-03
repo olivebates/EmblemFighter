@@ -28,16 +28,7 @@ func find_attack_target_from(heroes: Array, from_pos: Vector2i, use_advantage: b
 			in_range.append(hero)
 	if in_range.is_empty():
 		return null
-	if use_advantage and randf() < 0.45:
-		in_range.sort_custom(func(a, b):
-			var mult_a = WeaponTriangle.get_multiplier(attack_type, a.attack_type)
-			var mult_b = WeaponTriangle.get_multiplier(attack_type, b.attack_type)
-			if mult_a != mult_b:
-				return mult_a > mult_b
-			return a.hp < b.hp
-		)
-	else:
-		in_range.sort_custom(func(a, b): return a.hp < b.hp)
+	in_range.sort_custom(func(a, b): return a.hp < b.hp)
 	return in_range[0]
 
 func find_attack_target(heroes: Array, use_advantage: bool = false) -> Unit:
@@ -47,9 +38,9 @@ func raw_attack_damage(target: Unit) -> int:
 	return raw_attack_result(target).dmg
 
 func raw_attack_result(target: Unit) -> Dictionary:
-	var mult = WeaponTriangle.get_multiplier(attack_type, target.attack_type)
-	var dmg = max(1, int(enemy_data.skill_base_damage * mult) - target.get_def())
+	# Weapon triangle does not apply to enemy attacks — only hero skills have types
+	var dmg = max(1, int(enemy_data.skill_base_damage) - target.get_def())
 	var is_crit = randf() < crit_chance
 	if is_crit:
 		dmg = int(dmg * 1.5)
-	return {dmg = dmg, is_crit = is_crit, weapon_mult = mult}
+	return {dmg = dmg, is_crit = is_crit, weapon_mult = 1.0}

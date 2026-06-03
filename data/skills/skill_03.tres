@@ -13,3 +13,4 @@ base_damage = 15.0
 target_type = 0
 use_type_override = true
 attack_type_override = 1
+mana_cost = 2

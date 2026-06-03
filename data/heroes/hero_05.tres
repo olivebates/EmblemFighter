@@ -11,3 +11,7 @@ base_atk = 12
 base_def = 9
 base_spd = 3
 attack_type = 2
+op_buff_name = "Iron Aura"
+op_buff_description = "Take 35% less damage from all sources"
+op_buff_type = "damage_reduction"
+op_buff_value = 0.35

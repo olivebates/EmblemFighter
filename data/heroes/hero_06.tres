@@ -11,3 +11,7 @@ base_atk = 11
 base_def = 8
 base_spd = 3
 attack_type = 2
+op_buff_name = "Ancient Blood"
+op_buff_description = "HP permanently +50"
+op_buff_type = "hp_flat"
+op_buff_value = 50.0

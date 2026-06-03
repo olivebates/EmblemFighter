@@ -11,3 +11,7 @@ base_atk = 16
 base_def = 5
 base_spd = 4
 attack_type = 1
+op_buff_name = "Armor Break"
+op_buff_description = "Attacks ignore 5 enemy DEF"
+op_buff_type = "armor_pierce"
+op_buff_value = 5.0

@@ -8,6 +8,7 @@ enum SkillState { AVAILABLE, NO_RANGE, USED }
 signal state_changed(new_state: State)
 signal hero_activated(hero: HeroUnit)
 signal hero_skills_updated(hero: HeroUnit)
+signal victory_achieved
 signal movement_tiles_updated(tiles: Array)
 signal skill_targets_updated(tiles: Array)
 signal skill_valid_targets_updated(tiles: Array)
@@ -56,22 +57,42 @@ func setup(p_grid: Grid, p_units_layer: Node2D, p_hud: BattleHUD = null) -> void
 	_spawn_units()
 	_begin_round()
 
+func _get_hero_spawn_positions(count: int) -> Array[Vector2i]:
+	match count:
+		1: return [Vector2i(7, 13)]
+		2: return [Vector2i(6, 13), Vector2i(9, 13)]
+		3: return [Vector2i(5, 13), Vector2i(7, 13), Vector2i(10, 13)]
+		_: return [Vector2i(4, 13), Vector2i(6, 13), Vector2i(9, 13), Vector2i(11, 13)]
+
 func _spawn_units() -> void:
-	var hero_starts := [Vector2i(6, 13), Vector2i(9, 13)]
-	for i in Heroes.active_heroes.size():
-		var data: HeroData = Heroes.active_heroes[i]
-		var unit := _unit_scene.instantiate()
+	var heroes_to_spawn: Array[HeroData] = []
+	for data in Heroes.active_heroes:
+		if PlayerInventory.hero_ko.get(data.id, false):
+			continue
+		heroes_to_spawn.append(data)
+
+	var hero_starts = _get_hero_spawn_positions(heroes_to_spawn.size())
+	for i in heroes_to_spawn.size():
+		var data = heroes_to_spawn[i]
+		var unit = _unit_scene.instantiate()
 		unit.set_script(_hero_script)
 		units_layer.add_child(unit)
 		unit.add_to_group("heroes")
 		unit.setup(data)
+		var saved_hp = PlayerInventory.hero_hp.get(data.id, -1)
+		if saved_hp > 0:
+			unit.hp = mini(saved_hp, unit.max_hp)
+			unit.update_hp_bar()
 		grid.place_unit(unit, hero_starts[i])
 		hero_units.append(unit)
 
-	var enemy_starts := [Vector2i(6, 2), Vector2i(9, 2)]
-	for i in Enemies.active_enemies.size():
-		var data: EnemyData = Enemies.active_enemies[i]
-		_create_enemy_unit(data, enemy_starts[i])
+	var target_enemy_count = maxi(2, _enemy_wave_size)
+	var spawn_tiles = _collect_enemy_spawn_tiles()
+	for i in mini(target_enemy_count, spawn_tiles.size()):
+		var data = Enemies.pick_random_enemy()
+		if data == null:
+			break
+		_create_enemy_unit(data, spawn_tiles[i])
 	_enemy_wave_size = enemy_units.size()
 
 # --- Round / initiative ---
@@ -88,6 +109,7 @@ func _begin_round() -> void:
 			continue
 		hero.modulate = Color(1, 1, 1, 1)
 		hero.reset_for_turn()
+		hero.regen_mana(1)
 		Combat.fire_passive_turn_start(hero)
 		var adj := grid.get_adjacent_units(hero.grid_pos, "heroes")
 		Combat.fire_passive_adjacency(hero, adj)
@@ -443,6 +465,8 @@ func _compute_skill_states() -> Array:
 	for i in active_hero.skills.size():
 		if active_hero.skill_used(i):
 			states.append(SkillState.USED)
+		elif not active_hero.can_afford_skill(active_hero.skills[i]):
+			states.append(SkillState.NO_RANGE)
 		elif not Combat.can_use_skill_with_movement(active_hero, active_hero.skills[i], grid):
 			states.append(SkillState.NO_RANGE)
 		else:
@@ -461,9 +485,7 @@ func _cast_current_skill(target_pos: Vector2i) -> void:
 	if not pre_targets.is_empty():
 		target_world = pre_targets[0].position
 
-	var atk_type: WeaponTriangle.Type = active_hero.attack_type
-	if skill.use_type_override:
-		atk_type = skill.attack_type_override
+	var atk_type: WeaponTriangle.Type = skill.attack_type_override
 	var has_advantage := false
 	for t in pre_targets:
 		if WeaponTriangle.get_multiplier(atk_type, t.attack_type) > 1.0:
@@ -495,6 +517,7 @@ func _cast_current_skill(target_pos: Vector2i) -> void:
 			await _apply_skill_hit(active_hero, skill, target)
 			await get_tree().create_timer(0.08).timeout
 
+	active_hero.spend_mana(skill)
 	active_hero.use_skill(used_index)
 	_last_skill_by_hero[active_hero.get_instance_id()] = used_index
 	_current_skill_index = -1
@@ -598,6 +621,12 @@ func _run_single_enemy_turn(enemy: EnemyUnit) -> void:
 
 	var hp_before := target.hp
 	var result := enemy.raw_attack_result(target)
+	var enemy_reduction = target.damage_reduction if "damage_reduction" in target else 0.0
+	if enemy_reduction > 0.0:
+		result.dmg = max(1, int(result.dmg * (1.0 - enemy_reduction)))
+	var enemy_block = minf(0.3, target.block_pct) if "block_pct" in target else 0.0
+	if enemy_block > 0.0:
+		result.dmg = max(1, result.dmg - ceili(result.dmg * enemy_block))
 	target.hp -= result.dmg
 	target.update_hp_bar()
 	var is_lethal := target.hp <= 0 and hp_before > 0
@@ -762,11 +791,17 @@ func _run_enemy_wave_respawn() -> void:
 	_enemy_wave_respawn_scheduled = false
 	if state == State.GAME_OVER or not enemy_units.is_empty() or _living_hero_count() == 0:
 		return
-	var spawn_count := _enemy_wave_size + 1
-	_spawn_reinforcement_enemies(spawn_count)
-	_enemy_wave_size = enemy_units.size()
-	if enemy_units.is_empty():
-		_game_over(true)
+	_game_over(true)
+
+func _collect_enemy_spawn_tiles() -> Array[Vector2i]:
+	var tiles: Array[Vector2i] = []
+	for x in range(grid.GRID_W):
+		for y in range(grid.GRID_ROW_MIN, grid.GRID_H / 2):
+			var pos = Vector2i(x, y)
+			if grid.is_in_bounds(pos) and grid.is_passable(pos) and grid.is_empty(pos):
+				tiles.append(pos)
+	tiles.shuffle()
+	return tiles
 
 func _collect_valid_spawn_tiles() -> Array[Vector2i]:
 	var tiles: Array[Vector2i] = []
@@ -806,7 +841,41 @@ func _spawn_reinforcement_enemies(count: int) -> void:
 func _game_over(victory: bool) -> void:
 	state = State.GAME_OVER
 	state_changed.emit(State.GAME_OVER)
-	print("Game Over - Victory: ", victory)
+	if victory:
+		await get_tree().create_timer(0.5).timeout
+		PlayerInventory.save_battle_state(hero_units)
+		get_tree().paused = true
+		victory_achieved.emit()
+
+func start_next_round() -> void:
+	for unit in hero_units:
+		if is_instance_valid(unit):
+			if unit.hp > 0:
+				grid.remove_unit(unit)
+			unit.queue_free()
+	hero_units.clear()
+	for unit in enemy_units:
+		if is_instance_valid(unit):
+			grid.remove_unit(unit)
+			unit.queue_free()
+	enemy_units.clear()
+	_turn_queue.clear()
+	_heroes_done.clear()
+	active_hero = null
+	_current_skill_index = -1
+	smart_skill_preference = -1
+	_enemy_wave_respawn_scheduled = false
+	_enemy_wave_size += 1
+	if hud:
+		hud.clear_highlights()
+		hud.clear_unit_glows()
+		hud.clear_active_actor()
+		hud.hide_skill_bar()
+	get_tree().paused = false
+	state = State.HERO_TURN
+	state_changed.emit(State.HERO_TURN)
+	_spawn_units()
+	_begin_round()
 
 func _is_move_tile(pos: Vector2i) -> bool:
 	return Combat.get_movement_tiles(active_hero, grid).has(pos)

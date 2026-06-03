@@ -8,7 +8,7 @@ signal skill_bar_selected(index: int)
 signal skill_bar_end_pressed
 
 @onready var skill_bar: HBoxContainer = $SkillBar
-@onready var highlight_layer: Node2D = $HighlightLayer
+var highlight_layer: Node2D = null
 @onready var turn_order_bar: HBoxContainer = $TopChrome/TimelineRoot/TurnOrderBar
 @onready var _top_chrome: Control = $TopChrome
 @onready var _timeline_root: Control = $TopChrome/TimelineRoot
@@ -116,6 +116,7 @@ func set_highlight_mode(mode: HighlightMode) -> void:
 func set_layout_context(battle: Node2D, grid: Grid) -> void:
 	_battle = battle
 	_layout_grid = grid
+	highlight_layer = battle.get_node("HighlightLayer")
 
 func _process(_delta: float) -> void:
 	var want_detail := Input.is_key_pressed(KEY_ALT)

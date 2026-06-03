@@ -23,8 +23,9 @@ func random_equipment() -> EquipmentData:
 	return pool[randi() % pool.size()]
 
 func apply_bonuses(unit: Node, equip: EquipmentData) -> void:
-	unit.bonus_atk += equip.atk_bonus
-	unit.bonus_def += equip.def_bonus
-	unit.bonus_spd += equip.spd_bonus
-	unit.max_hp += equip.hp_bonus
-	unit.hp += equip.hp_bonus
+	unit.bonus_atk += equip.eff_atk()
+	unit.bonus_def += equip.eff_def()
+	unit.max_hp += equip.eff_hp()
+	unit.hp += equip.eff_hp()
+	if "block_pct" in unit and equip.block_pct > 0.0:
+		unit.block_pct = minf(0.3, unit.block_pct + equip.eff_block_pct())

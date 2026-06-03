@@ -4,8 +4,16 @@ extends Node2D
 @onready var units_layer: Node2D = $UnitsLayer
 @onready var battle_manager: BattleManager = $BattleManager
 @onready var hud: BattleHUD = $BattleHUD
+@onready var camera: Camera2D = $Camera2D
+
+var _camera_tween: Tween = null
+var _victory_menu: VictoryMenu
 
 func _ready() -> void:
+	_victory_menu = VictoryMenu.new()
+	add_child(_victory_menu)
+	_victory_menu.next_round_pressed.connect(_on_next_round)
+	battle_manager.victory_achieved.connect(_on_victory)
 	battle_manager.state_changed.connect(_on_state_changed)
 	battle_manager.hero_activated.connect(_on_hero_activated)
 	battle_manager.movement_tiles_updated.connect(_on_movement_tiles_updated)
@@ -23,13 +31,15 @@ func _ready() -> void:
 	hud.radial_skill_hovered.connect(_on_radial_skill_hovered)
 	hud.skill_bar_selected.connect(battle_manager.on_skill_bar_selected)
 	hud.skill_bar_end_pressed.connect(battle_manager.on_skill_bar_end_pressed)
+	hud.set_layout_context(self, grid)
 	battle_manager.setup(grid, units_layer, hud)
 	battle_manager.active_skill_changed.connect(_on_active_skill_changed)
 	battle_manager.active_actor_changed.connect(_on_active_actor_changed)
 	battle_manager.move_ghost_at.connect(_on_move_ghost_at)
-	hud.set_layout_context(self, grid)
+	Combat.unit_died.connect(func(_u): _update_camera())
 	hud.show_hero_turn()
 	_sync_highlight_mode()
+	call_deferred("_update_camera")
 
 func _refresh_range_glows() -> void:
 	if battle_manager.state != BattleManager.State.HERO_TURN:
@@ -290,6 +300,8 @@ func _on_turn_order_updated(units: Array) -> void:
 
 func _on_milestone_updated(text: String) -> void:
 	hud.show_milestone(text)
+	if text.begins_with("Reinforcements"):
+		call_deferred("_update_camera")
 
 func _on_status_indicators_updated(counter_heroes: Array, linked_pairs: Array) -> void:
 	hud.show_status_indicators(counter_heroes, linked_pairs, grid)
@@ -329,6 +341,9 @@ func _on_active_actor_changed(unit: Unit) -> void:
 func _on_move_ghost_at(pos: Vector2i, is_hero: bool) -> void:
 	var col := Color(0.35, 0.75, 1.0, 0.4) if is_hero else Color(0.95, 0.35, 0.3, 0.4)
 	hud.spawn_move_ghost(pos, grid, col)
+	await get_tree().create_timer(0.2).timeout
+	if is_instance_valid(self):
+		_update_camera()
 
 func _on_active_skill_changed(hero: HeroUnit, skill: SkillData) -> void:
 	hud.clear_smart_attack_preview()
@@ -380,3 +395,52 @@ func _update_status_counter_highlights() -> void:
 	var counters := Combat.heroes_with_counter(
 		battle_manager.hero_units, battle_manager.enemy_units, grid)
 	hud.show_counter_highlights(counters, grid)
+
+func _get_living_units() -> Array:
+	var units: Array = []
+	for hero in battle_manager.hero_units:
+		if is_instance_valid(hero) and hero.hp > 0:
+			units.append(hero)
+	for enemy in battle_manager.enemy_units:
+		if is_instance_valid(enemy) and enemy.hp > 0:
+			units.append(enemy)
+	return units
+
+func _update_camera() -> void:
+	var units := _get_living_units()
+	if units.is_empty():
+		return
+
+	var min_pos := Vector2(INF, INF)
+	var max_pos := Vector2(-INF, -INF)
+	for unit in units:
+		var p = unit.position
+		if p.x < min_pos.x: min_pos.x = p.x
+		if p.y < min_pos.y: min_pos.y = p.y
+		if p.x > max_pos.x: max_pos.x = p.x
+		if p.y > max_pos.y: max_pos.y = p.y
+
+	var margin := 96.0
+	min_pos -= Vector2(margin, margin)
+	max_pos += Vector2(margin, margin)
+
+	var box_size := max_pos - min_pos
+	var center := (min_pos + max_pos) * 0.5
+
+	var viewport_size := get_viewport_rect().size
+	var target_zoom = min(viewport_size.x / box_size.x, viewport_size.y / box_size.y)
+	target_zoom = clamp(target_zoom, 0.3, 1.5)
+
+	if _camera_tween and _camera_tween.is_valid():
+		_camera_tween.kill()
+
+	_camera_tween = create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	_camera_tween.tween_property(camera, "position", center, 0.4)
+	_camera_tween.parallel().tween_property(camera, "zoom", Vector2(target_zoom, target_zoom), 0.4)
+
+func _on_victory() -> void:
+	_victory_menu.show_menu()
+
+func _on_next_round() -> void:
+	battle_manager.start_next_round()
+	call_deferred("_update_camera")

@@ -22,6 +22,13 @@ const BUFF_TINT: Color = Color(0.42, 0.72, 1.0, 1.0)
 @export var use_type_override: bool = false
 # Radius of effect around the clicked tile (only used for ENEMY_AOE)
 @export var aoe_radius: int = 1
+@export var mana_cost: int = 2
+@export var grade: int = 1
+
+# Damage/heal magnitude scales by grade^2 (grade 1 = x1); sign preserved so
+# healing skills (base_damage < 0) scale too. Range/AoE/mana cost stay fixed.
+func eff_damage() -> float:
+	return base_damage * Grade.stat_mult(grade)
 
 func get_display_tint(skill_index: int = 0) -> Color:
 	if base_damage < 0:
