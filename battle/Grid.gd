@@ -178,7 +178,10 @@ func get_unit_at(pos: Vector2i) -> Node:
 func place_unit(unit: Node, pos: Vector2i) -> void:
 	occupancy[pos] = unit
 	unit.grid_pos = pos
-	unit.position = grid_to_world(pos)
+	if unit.has_method("snap_to_tile_center"):
+		unit.snap_to_tile_center(self)
+	else:
+		unit.position = grid_to_world(pos)
 
 func move_unit(unit: Node, to: Vector2i) -> void:
 	if occupancy.get(unit.grid_pos) == unit:

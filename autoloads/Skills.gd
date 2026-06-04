@@ -1,5 +1,7 @@
 extends Node
 
+const SMART_CAST_ENABLED = false
+
 const SKILL_SHEET := preload("res://Sprite/Placeholders/Skills.png")
 
 var pool: Array[SkillData] = []

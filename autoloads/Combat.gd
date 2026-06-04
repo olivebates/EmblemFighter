@@ -18,8 +18,10 @@ func execute_skill(caster: Node, skill: SkillData, target_pos: Vector2i, grid: N
 
 func apply_skill_to_target(caster: Node, skill: SkillData, target: Node, grid: Node) -> Dictionary:
 	if skill.base_damage < 0:
-		var heal := int(abs(skill.eff_damage()))
-		target.hp = min(target.hp + heal, target.max_hp)
+		var heal := mini(int(abs(skill.eff_damage())), target.max_hp - target.hp)
+		if heal <= 0:
+			return {heal = 0}
+		target.hp += heal
 		target.update_hp_bar()
 		damage_dealt.emit(target, -heal, false, 1.0)
 		return {heal = heal}
@@ -70,6 +72,17 @@ func preview_heal(_caster: Node, skill: SkillData, target: Node) -> Dictionary:
 		"is_heal": true,
 		"target": target,
 	}
+
+func would_heal_target(_caster: Node, skill: SkillData, target: Node) -> bool:
+	return skill.is_healing() and preview_heal(_caster, skill, target).actual_heal > 0
+
+func get_healable_hittable_tiles(caster: Node, skill: SkillData, grid: Node) -> Array[Vector2i]:
+	var result: Array[Vector2i] = []
+	for pos in get_hittable_tiles(caster, skill, grid):
+		var unit_at = grid.get_unit_at(pos)
+		if unit_at != null and would_heal_target(caster, skill, unit_at):
+			result.append(pos)
+	return result
 
 func preview_skill_at(caster: Node, skill: SkillData, target_pos: Vector2i, grid: Node) -> Array:
 	var previews: Array = []
@@ -229,7 +242,14 @@ func _skill_can_hit_from(from_pos: Vector2i, skill: SkillData, target_pos: Vecto
 	caster.grid_pos = from_pos
 	var hits := _get_targets(caster, skill, target_pos, grid)
 	caster.grid_pos = saved_pos
-	return not hits.is_empty()
+	if hits.is_empty():
+		return false
+	if skill.is_healing():
+		for target in hits:
+			if would_heal_target(caster, skill, target):
+				return true
+		return false
+	return true
 
 func _score_skill_at(caster: Node, skill: SkillData, from_pos: Vector2i,
 		target_pos: Vector2i, grid: Node) -> float:
@@ -519,7 +539,13 @@ func find_best_target_tile(caster: Node, skill: SkillData, grid: Node) -> Vector
 	var best_count := 0
 	for tile in get_skill_target_tiles(skill, caster.grid_pos, grid):
 		var hits := get_skill_targets_at(caster, skill, tile, grid)
-		if hits.size() > best_count:
-			best_count = hits.size()
+		var count := hits.size()
+		if skill.is_healing():
+			count = 0
+			for target in hits:
+				if would_heal_target(caster, skill, target):
+					count += 1
+		if count > best_count:
+			best_count = count
 			best_pos = tile
 	return best_pos

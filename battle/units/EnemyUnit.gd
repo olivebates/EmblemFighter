@@ -18,6 +18,21 @@ func get_skill_name() -> String:
 		return "Strike"
 	return enemy_data.skill_display_name
 
+func move_to_world(world_pos: Vector2) -> Tween:
+	face_toward(world_pos)
+	var body := get_node_or_null("Body") as Sprite2D
+	var duration := 0.4
+	var tween := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_QUAD)
+	tween.tween_property(self, "position", world_pos, duration)
+	tween.tween_callback(func(): position = world_pos)
+	if body:
+		var sy := body.scale.y
+		var sx := absf(body.scale.x) * signf(body.scale.x)
+		var squash := create_tween()
+		squash.tween_property(body, "scale", Vector2(sx * 1.06, sy * 0.94), duration * 0.4)
+		squash.tween_property(body, "scale", Vector2(sx, sy), duration * 0.5)
+	return tween
+
 # Returns the hero this enemy will attack from a given position, or null if none in range.
 func find_attack_target_from(heroes: Array, from_pos: Vector2i, use_advantage: bool = false) -> Unit:
 	var in_range := []

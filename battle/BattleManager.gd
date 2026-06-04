@@ -3,7 +3,7 @@ extends Node
 
 enum State { HERO_TURN, ENEMY_TURN, GAME_OVER, PLACEMENT }
 enum HeroPhase { AWAIT_MOVE, AWAIT_SKILL_SELECT, AWAIT_SKILL }
-enum SkillState { AVAILABLE, NO_RANGE, USED }
+enum SkillState { AVAILABLE, NO_RANGE, NO_MANA, USED }
 
 signal state_changed(new_state: State)
 signal placement_started
@@ -23,6 +23,7 @@ signal enemy_telegraph_requested(enemy: EnemyUnit, dest: Vector2i, target: Unit)
 signal enemy_telegraph_cleared
 signal active_actor_changed(unit: Unit)
 signal turn_intent_updated(text: String)
+signal skill_pulse_requested(in_range_indices: Array[int])
 signal move_ghost_at(grid_pos: Vector2i, is_hero: bool)
 var state: State = State.HERO_TURN
 var hero_phase: HeroPhase = HeroPhase.AWAIT_MOVE
@@ -133,17 +134,20 @@ func _spawn_units() -> void:
 
 	_enemy_wave_size = enemy_units.size()
 
-# --- Placement phase ---
+# --- Placement phase (level start only: setup + start_next_round) ---
 
 func _begin_placement() -> void:
 	state = State.PLACEMENT
-	state_changed.emit(State.PLACEMENT)
 	_selected_placement_hero = null
 	movement_tiles_updated.emit([])
 	turn_order_updated.emit([])
-	skill_bar_requested.emit(null, [], -1)
 	radial_menu_requested.emit(Vector2.ZERO, [], [])
 	placement_started.emit()
+	skill_bar_requested.emit(null, [], -1)
+	state_changed.emit(State.PLACEMENT)
+	if hud:
+		hud.enter_placement_phase()
+		hud.call_deferred("enter_placement_phase")
 
 func start_combat() -> void:
 	if state != State.PLACEMENT:
@@ -301,23 +305,25 @@ func on_tile_clicked(grid_pos: Vector2i, smart_cast: bool = false, move_only: bo
 				return
 			if _is_move_tile(grid_pos):
 				_move_active_hero(grid_pos)
-				return
-			var plan := get_smart_cast_plan(grid_pos)
-			if plan.skill_index != -1:
-				if smart_cast or plan.move_pos != Vector2i(-1, -1):
-					_smart_move_and_cast(plan.move_pos, grid_pos, plan.skill_index)
 		HeroPhase.AWAIT_SKILL:
 			if _current_skill_index >= 0:
 				var skill := active_hero.skills[_current_skill_index]
 				if _is_valid_skill_target(skill, grid_pos):
 					_cast_current_skill(grid_pos)
-				else:
-					var alt_idx := Combat.find_best_skill_index(
-						active_hero, active_hero.grid_pos, grid_pos, grid)
-					if alt_idx >= 0:
-						_select_skill(alt_idx)
+				elif _is_full_health_heal_click(skill, grid_pos):
+					_float_at_tile(grid_pos, "Already at full health", Color(0.75, 0.95, 0.75))
+				elif active_hero.movement_remaining > 0:
+					var plan = Combat.find_best_move_and_skill(
+						active_hero, grid_pos, grid, _current_skill_index)
+					if plan.skill_index == _current_skill_index:
+						if skill.is_healing() and _heal_preview_total(skill, grid_pos, plan.move_pos) <= 0:
+							_float_at_tile(grid_pos, "Already at full health", Color(0.75, 0.95, 0.75))
+						else:
+							_smart_move_and_cast(plan.move_pos, grid_pos, _current_skill_index)
 					else:
-						cycle_skill(1, grid_pos)
+						_float_at_tile(grid_pos, "No target...", Color(0.95, 0.75, 0.35))
+				else:
+					_float_at_tile(grid_pos, "No target...", Color(0.95, 0.75, 0.35))
 
 func on_skill_bar_selected(index: int) -> void:
 	on_radial_skill_selected(index)
@@ -328,7 +334,23 @@ func on_skill_bar_end_pressed() -> void:
 func on_radial_skill_selected(index: int) -> void:
 	if state != State.HERO_TURN or active_hero == null or _processing:
 		return
-	if hero_phase != HeroPhase.AWAIT_SKILL_SELECT and hero_phase != HeroPhase.AWAIT_SKILL:
+	if (hero_phase != HeroPhase.AWAIT_SKILL_SELECT
+			and hero_phase != HeroPhase.AWAIT_SKILL
+			and hero_phase != HeroPhase.AWAIT_MOVE):
+		return
+	if index < 0 or index >= active_hero.skills.size():
+		return
+	# Toggle off if the same skill is already selected
+	if hero_phase == HeroPhase.AWAIT_SKILL and _current_skill_index == index:
+		cancel_skill()
+		return
+	var states := _compute_skill_states()
+	var s = states[index] if index < states.size() else SkillState.USED
+	if s == SkillState.USED:
+		return
+	if s == SkillState.NO_MANA:
+		Utils.floating_text("Not enough mana...", Color(0.45, 0.65, 1.0),
+			active_hero.position + Vector2(0, -20), units_layer, 12)
 		return
 	_select_skill(index)
 
@@ -336,6 +358,22 @@ func on_radial_end_pressed() -> void:
 	if state != State.HERO_TURN or active_hero == null or _processing:
 		return
 	_mark_hero_done(true)
+
+func cancel_skill() -> void:
+	if state != State.HERO_TURN or active_hero == null or _processing:
+		return
+	if hero_phase != HeroPhase.AWAIT_SKILL:
+		return
+	_current_skill_index = -1
+	hero_phase = HeroPhase.AWAIT_MOVE
+	skill_targets_updated.emit([])
+	skill_valid_targets_updated.emit([])
+	skill_bar_requested.emit(active_hero, _compute_skill_states(), -1)
+	active_skill_changed.emit(null, null)
+	_show_move_highlights()
+	var pulsable = _compute_pulsable_from_movement()
+	if not pulsable.is_empty():
+		skill_pulse_requested.emit(pulsable)
 
 func get_smart_cast_plan(target_pos: Vector2i) -> Dictionary:
 	if active_hero == null:
@@ -413,8 +451,14 @@ func _activate_hero(hero: HeroUnit) -> void:
 	hero_activated.emit(hero)
 	active_actor_changed.emit(hero)
 	_show_move_highlights()
-	skill_bar_requested.emit(null, [], -1)
+	skill_bar_requested.emit(hero, _compute_skill_states(), -1)
 	active_skill_changed.emit(null, null)
+	var pulsable = _compute_pulsable_from_movement()
+	if not pulsable.is_empty():
+		skill_pulse_requested.emit(pulsable)
+	elif Combat.get_movement_tiles(active_hero, grid).is_empty():
+		# Truly stuck — no moves and no skills — pulse end button
+		skill_pulse_requested.emit([] as Array[int])
 
 func _show_move_highlights() -> void:
 	if active_hero == null:
@@ -431,14 +475,20 @@ func _move_active_hero(to: Vector2i) -> void:
 		return
 	_processing = true
 	var from_pos := active_hero.grid_pos
+	var dest_world := grid.grid_to_world(to)
+	await active_hero.play_move_anticipation(dest_world)
 	active_hero.movement_remaining -= dist
 	grid.move_unit(active_hero, to)
 	move_ghost_at.emit(from_pos, true)
-	var tween := active_hero.move_to_world(grid.grid_to_world(to))
+	Utils.spawn_move_dust(grid.grid_to_world(to), units_layer, Color(0.35, 0.75, 1.0, 0.5))
+	var tween := active_hero.move_to_world(dest_world)
 	movement_tiles_updated.emit([])
 	await tween.finished
-	if is_instance_valid(active_hero) and hud:
-		hud.update_active_actor_position(active_hero, grid)
+	if is_instance_valid(active_hero):
+		if active_hero.has_method("snap_to_tile_center"):
+			active_hero.snap_to_tile_center(grid)
+		if hud:
+			hud.update_active_actor_position(active_hero, grid)
 	_processing = false
 	_update_status_indicators()
 	_enter_skill_select_phase()
@@ -446,7 +496,6 @@ func _move_active_hero(to: Vector2i) -> void:
 func _enter_skill_select_phase() -> void:
 	if active_hero == null:
 		return
-	_end_move_phase()
 	skill_targets_updated.emit([])
 	skill_valid_targets_updated.emit([])
 	var states := _compute_skill_states()
@@ -465,9 +514,9 @@ func _enter_skill_select_phase() -> void:
 			if Combat.skill_usable_from(active_hero, skill, active_hero.grid_pos, grid):
 				in_range.append(i)
 	if not in_range.is_empty():
-		var idx := _pick_auto_skill_index(in_range)
-		if idx >= 0:
-			_select_skill(idx)
+		hero_phase = HeroPhase.AWAIT_SKILL_SELECT
+		skill_bar_requested.emit(active_hero, states, -1)
+		skill_pulse_requested.emit(in_range)
 		return
 	_mark_hero_done(false)
 
@@ -489,15 +538,22 @@ func _select_skill(index: int) -> void:
 	if active_hero == null or active_hero.skill_used(index):
 		return
 	var skill := active_hero.skills[index]
-	if not Combat.skill_usable_from(active_hero, skill, active_hero.grid_pos, grid):
+	if not active_hero.can_afford_skill(skill):
 		return
 	_current_skill_index = index
 	hero_phase = HeroPhase.AWAIT_SKILL
-	movement_tiles_updated.emit([])
+	if active_hero.movement_remaining > 0:
+		movement_tiles_updated.emit(Combat.get_movement_tiles(active_hero, grid))
+	else:
+		movement_tiles_updated.emit([])
 	skill_targets_updated.emit(Combat.get_skill_target_tiles(skill, active_hero.grid_pos, grid))
 	skill_valid_targets_updated.emit(Combat.get_hittable_tiles(active_hero, skill, grid))
 	skill_bar_requested.emit(active_hero, _compute_skill_states(), index)
 	active_skill_changed.emit(active_hero, skill)
+	if hud:
+		hud.play_skill_selected_feedback(index, skill, active_hero)
+	if active_hero.has_method("play_skill_ready_pulse"):
+		active_hero.play_skill_ready_pulse()
 
 func _pick_auto_skill(states: Array) -> int:
 	var available: Array[int] = []
@@ -551,13 +607,52 @@ func _score_skill_availability(skill: SkillData) -> float:
 func get_skill_states() -> Array:
 	return _compute_skill_states()
 
+func _compute_pulsable_from_movement() -> Array[int]:
+	var pulsable: Array[int] = []
+	if active_hero == null:
+		return pulsable
+	var positions: Array[Vector2i] = [active_hero.grid_pos]
+	for p in Combat.get_movement_tiles(active_hero, grid):
+		positions.append(p)
+	var saved_pos = active_hero.grid_pos
+	for i in active_hero.skills.size():
+		if active_hero.skill_used(i):
+			continue
+		if not active_hero.can_afford_skill(active_hero.skills[i]):
+			continue
+		var skill = active_hero.skills[i]
+		var needs_friendly = skill.is_healing() or skill.is_buff()
+		var found = false
+		for cast_pos in positions:
+			active_hero.grid_pos = cast_pos
+			if skill.is_healing():
+				if not Combat.get_healable_hittable_tiles(active_hero, skill, grid).is_empty():
+					found = true
+			else:
+				for hit_pos in Combat.get_hittable_tiles(active_hero, skill, grid):
+					var unit_at = grid.get_unit_at(hit_pos)
+					if unit_at == null or unit_at.hp <= 0:
+						continue
+					if needs_friendly and unit_at.is_in_group("heroes"):
+						found = true
+						break
+					elif not needs_friendly and unit_at.is_in_group("enemies"):
+						found = true
+						break
+			if found:
+				break
+		if found:
+			pulsable.append(i)
+	active_hero.grid_pos = saved_pos
+	return pulsable
+
 func _compute_skill_states() -> Array:
 	var states: Array = []
 	for i in active_hero.skills.size():
 		if active_hero.skill_used(i):
 			states.append(SkillState.USED)
 		elif not active_hero.can_afford_skill(active_hero.skills[i]):
-			states.append(SkillState.NO_RANGE)
+			states.append(SkillState.NO_MANA)
 		elif not Combat.can_use_skill_with_movement(active_hero, active_hero.skills[i], grid):
 			states.append(SkillState.NO_RANGE)
 		else:
@@ -565,14 +660,22 @@ func _compute_skill_states() -> Array:
 	return states
 
 func _cast_current_skill(target_pos: Vector2i) -> void:
+	var skill := active_hero.skills[_current_skill_index]
+	var pre_targets := Combat.get_skill_targets_at(active_hero, skill, target_pos, grid)
+	if skill.is_healing():
+		var heal_total := 0
+		for target in pre_targets:
+			heal_total += Combat.preview_heal(active_hero, skill, target).actual_heal
+		if heal_total <= 0:
+			_float_at_tile(target_pos, "Already at full health", Color(0.75, 0.95, 0.75))
+			return
+
 	_processing = true
 	skill_targets_updated.emit([])
 	skill_valid_targets_updated.emit([])
 	skill_bar_requested.emit(active_hero, _compute_skill_states(), _current_skill_index)
 
-	var skill := active_hero.skills[_current_skill_index]
 	var target_world := grid.grid_to_world(target_pos)
-	var pre_targets := Combat.get_skill_targets_at(active_hero, skill, target_pos, grid)
 	if not pre_targets.is_empty():
 		target_world = pre_targets[0].position
 
@@ -627,14 +730,50 @@ func _cast_current_skill(target_pos: Vector2i) -> void:
 		_mark_hero_done(false)
 	else:
 		hero_phase = HeroPhase.AWAIT_MOVE
+		active_hero.movement_remaining = 2
 		_show_move_highlights()
-		skill_bar_requested.emit(null, [], -1)
+		skill_bar_requested.emit(active_hero, _compute_skill_states(), -1)
 		active_skill_changed.emit(null, null)
+		var pulsable = _compute_pulsable_from_movement()
+		if not pulsable.is_empty():
+			skill_pulse_requested.emit(pulsable)
+		elif not Combat.get_movement_tiles(active_hero, grid).is_empty():
+			skill_pulse_requested.emit([] as Array[int])
 
 func _is_valid_skill_target(skill: SkillData, target_pos: Vector2i) -> bool:
 	if Utils.manhattan(active_hero.grid_pos, target_pos) > skill.range:
 		return false
-	return not Combat.get_skill_targets_at(active_hero, skill, target_pos, grid).is_empty()
+	var targets := Combat.get_skill_targets_at(active_hero, skill, target_pos, grid)
+	if targets.is_empty():
+		return false
+	if skill.is_healing():
+		for target in targets:
+			if Combat.would_heal_target(active_hero, skill, target):
+				return true
+		return false
+	return true
+
+func _is_full_health_heal_click(skill: SkillData, target_pos: Vector2i) -> bool:
+	if not skill.is_healing():
+		return false
+	if Utils.manhattan(active_hero.grid_pos, target_pos) > skill.range:
+		return false
+	var targets := Combat.get_skill_targets_at(active_hero, skill, target_pos, grid)
+	if targets.is_empty():
+		return false
+	for target in targets:
+		if Combat.would_heal_target(active_hero, skill, target):
+			return false
+	return true
+
+func _heal_preview_total(skill: SkillData, target_pos: Vector2i, from_pos: Vector2i) -> int:
+	var total := 0
+	for preview in Combat.preview_skill_at_from(active_hero, skill, target_pos, from_pos, grid):
+		total += preview.get("actual_heal", 0)
+	return total
+
+func _float_at_tile(tile: Vector2i, text: String, color: Color) -> void:
+	Utils.floating_text(text, color, grid.grid_to_world(tile) + Vector2(0, -8), units_layer, 12)
 
 func _mark_hero_done(premature: bool = false) -> void:
 	radial_menu_requested.emit(Vector2.ZERO, [], [])
@@ -658,14 +797,20 @@ func _smart_move_and_cast(move_pos: Vector2i, target_pos: Vector2i, skill_index:
 	if move_pos != active_hero.grid_pos:
 		var from_pos := active_hero.grid_pos
 		var dist := Utils.manhattan(active_hero.grid_pos, move_pos)
+		var dest_world := grid.grid_to_world(move_pos)
+		await active_hero.play_move_anticipation(dest_world)
 		active_hero.movement_remaining -= dist
 		grid.move_unit(active_hero, move_pos)
 		move_ghost_at.emit(from_pos, true)
-		var tween := active_hero.move_to_world(grid.grid_to_world(move_pos))
+		var tween := active_hero.move_to_world(dest_world)
+		Utils.spawn_move_dust(dest_world, units_layer, Color(0.35, 0.75, 1.0, 0.5))
 		movement_tiles_updated.emit([])
 		await tween.finished
-		if is_instance_valid(active_hero) and hud:
-			hud.update_active_actor_position(active_hero, grid)
+		if is_instance_valid(active_hero):
+			if active_hero.has_method("snap_to_tile_center"):
+				active_hero.snap_to_tile_center(grid)
+			if hud:
+				hud.update_active_actor_position(active_hero, grid)
 		_end_move_phase()
 	_current_skill_index = skill_index
 	_last_skill_by_hero[active_hero.get_instance_id()] = skill_index
@@ -675,6 +820,9 @@ func _smart_move_and_cast(move_pos: Vector2i, target_pos: Vector2i, skill_index:
 # --- Enemy turn ---
 
 func _run_single_enemy_turn(enemy: EnemyUnit) -> void:
+	await get_tree().create_timer(0.4).timeout
+	if state == State.GAME_OVER or not is_instance_valid(enemy):
+		return
 	var dest := Combat.enemy_move_destination(enemy, hero_units, grid, [])
 	var target := enemy.find_attack_target_from(hero_units, dest, true)
 
@@ -690,8 +838,8 @@ func _run_single_enemy_turn(enemy: EnemyUnit) -> void:
 		var enemy_from := enemy.grid_pos
 		grid.move_unit(enemy, dest)
 		move_ghost_at.emit(enemy_from, false)
-		enemy.move_to_world(grid.grid_to_world(dest))
-		await get_tree().create_timer(0.22).timeout
+		var move_tw := enemy.move_to_world(grid.grid_to_world(dest))
+		await move_tw.finished
 
 	if state == State.GAME_OVER:
 		return
@@ -722,16 +870,20 @@ func _run_single_enemy_turn(enemy: EnemyUnit) -> void:
 	target.update_hp_bar()
 	var is_lethal := target.hp <= 0 and hp_before > 0
 	if is_lethal:
-		await _hitstop(0.05)
+		await _hitstop(0.06)
 		if hud:
 			await hud.play_kill_flash(target.grid_pos, grid)
 		await _hitstop(_hitstop_duration(result.dmg, target, result.is_crit, true))
+		_shake_screen_for_hit(result.dmg, target, result.is_crit, true)
 	elif result.is_crit:
 		target.play_crit_hit_animation()
 		await _hitstop(_hitstop_duration(result.dmg, target, true, false))
+		_shake_screen_for_hit(result.dmg, target, result.is_crit)
+		_play_hit_vignette(result.dmg, target)
 	else:
 		target.play_hit_animation()
-	_shake_screen_for_hit(result.dmg, target, result.is_crit)
+		_shake_screen_for_hit(result.dmg, target, result.is_crit)
+		_play_hit_vignette(result.dmg, target)
 	_show_damage_text(target, result.dmg, result.is_crit, result.weapon_mult)
 	Combat.fire_passive_on_damaged(target, enemy, result.dmg)
 
@@ -777,7 +929,9 @@ func _on_combat_damage_dealt(target: Node, dmg: int, is_crit: bool, weapon_mult:
 	else:
 		_show_damage_text(target, dmg, is_crit, weapon_mult)
 		if target is Unit:
-			_shake_screen_for_hit(dmg, target as Unit, is_crit)
+			var u := target as Unit
+			_shake_screen_for_hit(dmg, u, is_crit)
+			_play_hit_vignette(dmg, u)
 
 func _apply_skill_hit(caster: HeroUnit, skill: SkillData, target: Node) -> void:
 	if not is_instance_valid(target):
@@ -793,16 +947,21 @@ func _apply_skill_hit(caster: HeroUnit, skill: SkillData, target: Node) -> void:
 	var is_crit: bool = result.get("is_crit", false)
 	var is_lethal = hp_before > 0 and is_instance_valid(target) and target.hp <= 0
 	if is_lethal:
-		await _hitstop(0.05)
+		await _hitstop(0.06)
 		if hud:
 			await hud.play_kill_flash(grid_pos, grid)
 		await _hitstop(_hitstop_duration(dmg, target as Unit, is_crit, true))
+		_shake_screen_for_hit(dmg, target as Unit, is_crit, true)
 	elif is_crit:
 		if is_instance_valid(target) and target.hp > 0:
 			target.play_crit_hit_animation()
 		await _hitstop(_hitstop_duration(dmg, target as Unit, true, false))
+		_shake_screen_for_hit(dmg, target as Unit, is_crit)
+		_play_hit_vignette(dmg, target as Unit)
 	elif is_instance_valid(target) and target.hp > 0:
 		target.play_hit_animation()
+		_shake_screen_for_hit(dmg, target as Unit, is_crit)
+		_play_hit_vignette(dmg, target as Unit)
 
 func _damage_tier(dmg: int, target: Unit) -> int:
 	if target == null:
@@ -813,9 +972,18 @@ func _hitstop_duration(dmg: int, target: Unit, is_crit: bool, is_kill: bool) -> 
 	var max_hp := target.max_hp if target != null else 0
 	return Utils.hitstop_duration(dmg, max_hp, is_crit, is_kill)
 
-func _shake_screen_for_hit(dmg: int, target: Unit, is_crit: bool) -> void:
+func _shake_screen_for_hit(dmg: int, target: Unit, is_crit: bool, is_kill: bool = false) -> void:
 	var max_hp := target.max_hp if target != null else 0
-	Utils.shake_for_hit(units_layer, dmg, max_hp, is_crit)
+	Utils.shake_for_hit(units_layer, dmg, max_hp, is_crit, is_kill)
+
+func _play_hit_vignette(dmg: int, target: Unit) -> void:
+	if hud == null or target == null or dmg <= 0:
+		return
+	var tier := _damage_tier(dmg, target)
+	if target.is_in_group("enemies"):
+		hud.play_damage_vignette(maxi(tier, 1), true)
+	elif tier >= 2:
+		hud.play_damage_vignette(tier, false)
 
 func _show_damage_text(target: Node, dmg: int, is_crit: bool, weapon_mult: float) -> void:
 	var max_hp := (target as Unit).max_hp if target is Unit else 0
@@ -971,6 +1139,7 @@ func start_next_round() -> void:
 		hud.clear_highlights()
 		hud.clear_unit_glows()
 		hud.clear_active_actor()
+		hud.hide_placement_bar()
 		hud.hide_skill_bar()
 	# Advance to next room in sequence and reload the grid
 	RoomLibrary.pick_next_room()

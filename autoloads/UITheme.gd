@@ -160,6 +160,27 @@ func apply_button_theme(btn: Button, active: bool = false, radius: int = PANEL_R
 	btn.add_theme_color_override("font_disabled_color", TEXT_MUTED)
 
 
+func apply_prominent_button_theme(btn: Button, radius: int = PANEL_RADIUS_SM) -> void:
+	var normal_bg := Color8(92, 64, 48, 255)
+	var hover_bg := Color8(138, 99, 73, 255)
+	var pressed_bg := Color8(26, 17, 12, 255)
+	btn.add_theme_stylebox_override("normal",
+			panel_style(normal_bg, BTN_BORDER_HOVER, radius, 2))
+	btn.add_theme_stylebox_override("hover",
+			panel_style(hover_bg, Color8(184, 146, 110, 255), radius, 2))
+	btn.add_theme_stylebox_override("pressed",
+			panel_style(pressed_bg, BTN_BORDER, radius, 2))
+	btn.add_theme_stylebox_override("disabled",
+			panel_style(PANEL_BG_DARK, PANEL_BORDER_DARK, radius, 1))
+	btn.add_theme_stylebox_override("focus",
+			panel_style(BTN_BG_HOVER, BTN_BORDER_HOVER, radius, 2))
+	btn.add_theme_color_override("font_color", TEXT_PRIMARY)
+	btn.add_theme_color_override("font_hover_color", TEXT_PRIMARY)
+	btn.add_theme_color_override("font_pressed_color", TEXT_PRIMARY)
+	btn.add_theme_color_override("font_focus_color", TEXT_PRIMARY)
+	btn.add_theme_color_override("font_disabled_color", TEXT_MUTED)
+
+
 func menu_separator() -> ColorRect:
 	var sep := ColorRect.new()
 	sep.custom_minimum_size = Vector2(0, 1)

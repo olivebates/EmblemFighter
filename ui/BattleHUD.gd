@@ -6,6 +6,7 @@ signal radial_end_pressed
 signal radial_skill_hovered(index: int)
 signal skill_bar_selected(index: int)
 signal skill_bar_end_pressed
+signal placement_start_pressed
 
 @onready var skill_bar: HBoxContainer = $SkillBar
 var highlight_layer: Node2D = null
@@ -16,6 +17,15 @@ var highlight_layer: Node2D = null
 
 var _skill_buttons: Array[Control] = []
 var _skill_slot_tweens: Array[Tween] = []
+var _skill_bar_hero: HeroUnit = null
+var _skill_bar_bg: Control = null
+var _placement_start_btn: Button = null
+var _placement_bar: CenterContainer = null
+const BADGE_TARGET_GAP_PX := 28.0
+const BADGE_TARGET_Y_OFFSET_PX := -44.0
+var _mana_bar: Control = null
+var _mana_bar_fill: ColorRect = null
+var _mana_bar_label: Label = null
 var _radial_nodes: Array[Node] = []
 var _preview_label: Label = null
 
@@ -41,6 +51,9 @@ var _counter_highlights: Array[Node] = []
 var _smart_preview_nodes: Array[Node] = []
 var _move_outline: Array[Node] = []
 var _skill_outline: Array[Node] = []
+var _spawn_zone_outline: Array[Node] = []
+var _walk_to_shoot_highlights: Array[Node] = []
+var _extended_reach_highlights: Array[Node] = []
 
 var _hover_panel: Panel = null
 var _effects_desc_panel: Control = null
@@ -102,11 +115,21 @@ func _ready() -> void:
 	_screen_popup_layer.add_child(_weakness_panel)
 	_weakness_panel.position = Vector2(8.0, 44.0)
 
+	_skill_bar_bg = _create_skill_bar_bg()
+	_skill_bar_bg.visible = false
+	add_child(_skill_bar_bg)
+	move_child(_skill_bar_bg, skill_bar.get_index())
+
+	_mana_bar = _create_mana_bar_widget()
+	_mana_bar.visible = false
+	add_child(_mana_bar)
+	_build_placement_bar()
+
 func set_highlight_mode(mode: HighlightMode) -> void:
 	if _highlight_mode == mode:
 		return
 	_highlight_mode = mode
-	if mode != HighlightMode.MOVE:
+	if mode != HighlightMode.MOVE and mode != HighlightMode.SKILL:
 		_free_list(_move_highlights)
 		_free_list(_cover_highlights)
 		_free_list(_move_outline)
@@ -117,6 +140,8 @@ func set_highlight_mode(mode: HighlightMode) -> void:
 		_free_list(_valid_target_highlights)
 		_free_list(_cursor_aoe_highlights)
 		_free_list(_move_skill_preview_highlights)
+		_free_list(_walk_to_shoot_highlights)
+		_free_list(_extended_reach_highlights)
 		_free_list(_kill_highlights)
 		_skill_range_positions.clear()
 		_valid_target_positions.clear()
@@ -141,6 +166,10 @@ func _process(_delta: float) -> void:
 		_active_actor_ring.position = _layout_grid.grid_to_world(_tracked_active_unit.grid_pos)
 	_layout_hero_skill_popup()
 	_layout_damage_preview()
+	if _skill_bar_hero and is_instance_valid(_skill_bar_hero):
+		_update_mana_bar(_skill_bar_hero)
+	if _placement_start_btn and is_instance_valid(_placement_start_btn) and _skill_bar_bg.visible:
+		_reposition_placement_bar()
 
 func _viewport_size() -> Vector2:
 	return get_viewport().get_visible_rect().size
@@ -238,6 +267,12 @@ func _collect_ui_chrome_rects() -> Array[Rect2]:
 		chrome.append(Rect2(_top_chrome.global_position, _top_chrome.size))
 	if skill_bar and skill_bar.visible:
 		chrome.append(Rect2(skill_bar.global_position, skill_bar.size))
+	if _mana_bar and _mana_bar.visible:
+		chrome.append(Rect2(_mana_bar.global_position, _mana_bar.size))
+	if _placement_bar and _placement_bar.visible:
+		chrome.append(Rect2(_placement_bar.global_position, _placement_bar.size))
+	if _skill_bar_bg and _skill_bar_bg.visible:
+		chrome.append(Rect2(_skill_bar_bg.global_position, _skill_bar_bg.size))
 	if _preview_label and _preview_label.text != "":
 		chrome.append(Rect2(_preview_label.global_position, _preview_label.size))
 	return chrome
@@ -320,7 +355,7 @@ func _position_badge_for_targets(badge: Control, fallback_grid: Vector2i) -> voi
 	var target_positions = badge.get_meta("target_positions", []) as Array
 	var vp = _viewport_size()
 	var half_tile = TILE_SIZE * 0.5
-	var gap = 8.0
+	var gap = BADGE_TARGET_GAP_PX
 	if not target_positions.is_empty():
 		var hero_grid_pos = badge.get_meta("hero_grid", fallback_grid) as Vector2i
 		var primary_target = target_positions[0] as Vector2i
@@ -445,7 +480,9 @@ func _layout_attack_popups(badge: Control) -> void:
 		_effects_desc_panel.size = desc_sz
 	var shared_h = maxf(badge_sz.y, desc_sz.y)
 	var vp = _viewport_size()
-	var pair_top = clampf(target_y - shared_h * 0.5, SCREEN_MARGIN, vp.y - shared_h - SCREEN_MARGIN)
+	var pair_top = clampf(
+			target_y - shared_h * 0.5 + BADGE_TARGET_Y_OFFSET_PX,
+			SCREEN_MARGIN, vp.y - shared_h - SCREEN_MARGIN)
 	badge.position.y = pair_top + (shared_h - badge_sz.y) * 0.5
 	if desc_panel == null:
 		return
@@ -502,12 +539,19 @@ func show_skill_bar(hero: HeroUnit, states: Array, highlight_index: int) -> void
 		btn.queue_free()
 	_skill_buttons.clear()
 	if hero == null:
+		_skill_bar_hero = null
+		if _mana_bar:
+			_mana_bar.visible = false
+		if _skill_bar_bg:
+			_skill_bar_bg.visible = false
 		return
 
+	_skill_bar_hero = hero
+
 	var end_btn := Button.new()
-	end_btn.text = "End"
-	end_btn.custom_minimum_size = Vector2(44, 44)
-	end_btn.add_theme_font_size_override("font_size", UITheme.FONT_MD)
+	end_btn.text = "End\n(Space)"
+	end_btn.custom_minimum_size = Vector2(40, 32)
+	end_btn.add_theme_font_size_override("font_size", UITheme.FONT_SM)
 	end_btn.add_theme_stylebox_override("normal", UITheme.panel_style())
 	end_btn.add_theme_stylebox_override("hover", UITheme.panel_style(
 		Color(0.06, 0.06, 0.1, 0.95), UITheme.TEXT_SUBTLE))
@@ -523,15 +567,31 @@ func show_skill_bar(hero: HeroUnit, states: Array, highlight_index: int) -> void
 		skill_bar.add_child(slot)
 		_skill_buttons.append(slot)
 
+	if _skill_bar_bg:
+		_skill_bar_bg.visible = true
+	if _placement_bar:
+		_placement_bar.visible = false
+	skill_bar.visible = true
+	_update_mana_bar(hero)
+	call_deferred("_reposition_skill_bar")
+
+const _SKILL_HOTKEYS = ["Q", "W", "E", "R"]
+
 func _make_skill_icon_slot(hero: HeroUnit, skill_index: int, skill: SkillData,
 		state_val: int, is_active: bool) -> Control:
 	var tint := skill.get_display_tint(skill_index)
 	var wrapper := Control.new()
-	wrapper.custom_minimum_size = Vector2(44, 44)
+	wrapper.custom_minimum_size = Vector2(32, 32)
+	wrapper.mouse_filter = Control.MOUSE_FILTER_STOP
 	wrapper.tooltip_text = skill.display_name
+	var _captured_index = skill_index
+	wrapper.gui_input.connect(func(event: InputEvent):
+		if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+			skill_bar_selected.emit(_captured_index))
 
 	var panel := PanelContainer.new()
 	panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_theme_stylebox_override("panel", UITheme.tinted_panel_style(tint, is_active))
 	wrapper.add_child(panel)
 
@@ -541,18 +601,16 @@ func _make_skill_icon_slot(hero: HeroUnit, skill_index: int, skill: SkillData,
 	panel.add_child(center)
 
 	var tex := TextureRect.new()
-	tex.custom_minimum_size = Vector2(32, 32)
+	tex.custom_minimum_size = Vector2(24, 24)
 	tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	tex.texture = _skill_icon_texture(hero, skill_index, skill)
 	tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	match state_val:
-		BattleManager.SkillState.NO_RANGE:
-			tex.modulate = Color(0.55, 0.55, 0.55, 0.65)
 		BattleManager.SkillState.USED:
 			tex.modulate = Color(0.35, 0.35, 0.35, 0.45)
 		_:
-			tex.modulate = tint if not is_active else tint.lightened(0.2)
+			tex.modulate = Color.WHITE
 	center.add_child(tex)
 
 	if state_val == BattleManager.SkillState.USED:
@@ -564,23 +622,230 @@ func _make_skill_icon_slot(hero: HeroUnit, skill_index: int, skill: SkillData,
 		UITheme.apply_font(check, UITheme.FONT_LG, UITheme.HERO_ACCENT)
 		check.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		panel.add_child(check)
-	elif state_val == BattleManager.SkillState.NO_RANGE:
-		var slash := ColorRect.new()
-		slash.color = Color(0.95, 0.25, 0.25, 0.75)
-		slash.size = Vector2(2, 42)
-		slash.pivot_offset = slash.size * 0.5
-		slash.position = Vector2(21, 1)
-		slash.rotation = deg_to_rad(45)
-		slash.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		panel.add_child(slash)
+	elif state_val == BattleManager.SkillState.NO_MANA:
+		var dark = ColorRect.new()
+		dark.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		dark.color = Color(0.0, 0.0, 0.0, 0.9)
+		dark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		panel.add_child(dark)
 
 	if is_active:
+		wrapper.scale = Vector2(1.1, 1.1)
+		var ring := ColorRect.new()
+		ring.name = "ActiveRing"
+		ring.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		ring.offset_left = -3
+		ring.offset_top = -3
+		ring.offset_right = 3
+		ring.offset_bottom = 3
+		ring.color = Color(tint.r, tint.g, tint.b, 0.55)
+		ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ring.z_index = -1
+		wrapper.add_child(ring)
+		ring.show_behind_parent = true
 		var glow := panel.create_tween().set_loops()
-		glow.tween_property(panel, "modulate", Color(1.12, 1.12, 1.12, 1.0), 0.45)
-		glow.tween_property(panel, "modulate", Color.WHITE, 0.45)
+		glow.tween_property(panel, "modulate", Color(1.18, 1.14, 1.05, 1.0), 0.38)
+		glow.tween_property(panel, "modulate", Color.WHITE, 0.38)
 		_skill_slot_tweens.append(glow)
 
+	# Hotkey label: top-left corner (Q/W/E/R)
+	if skill_index < _SKILL_HOTKEYS.size():
+		var hotkey_lbl := Label.new()
+		hotkey_lbl.text = _SKILL_HOTKEYS[skill_index]
+		hotkey_lbl.position = Vector2(2, 1)
+		hotkey_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		hotkey_lbl.z_index = 2
+		UITheme.apply_font(hotkey_lbl, UITheme.FONT_SM, Color(1.0, 1.0, 1.0, 0.85))
+		wrapper.add_child(hotkey_lbl)
+
+	# Mana cost label: bottom-left corner
+	var mana_lbl := Label.new()
+	mana_lbl.text = str(skill.mana_cost)
+	mana_lbl.position = Vector2(2, 20)
+	mana_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mana_lbl.z_index = 2
+	UITheme.apply_font(mana_lbl, UITheme.FONT_SM, Color(0.45, 0.65, 1.0, 1.0))
+	wrapper.add_child(mana_lbl)
+
 	return wrapper
+
+func _reposition_skill_bar() -> void:
+	if skill_bar == null:
+		return
+	skill_bar.reset_size()
+	var vp = _viewport_size()
+	var bar_size = skill_bar.get_combined_minimum_size()
+	var pad_h = 8.0
+	var pad_v = 6.0
+	var mana_h = 12.0
+	var mana_gap = 4.0
+	var total_h = bar_size.y + mana_gap + mana_h + pad_v * 2.0
+	var bg_y = vp.y - total_h
+	skill_bar.position = Vector2(
+		(vp.x - bar_size.x) * 0.5,
+		bg_y + pad_v)
+	if _mana_bar:
+		var mana_w = bar_size.x
+		_mana_bar.size = Vector2(mana_w, mana_h)
+		_mana_bar.position = Vector2(skill_bar.position.x, skill_bar.position.y + bar_size.y + mana_gap)
+	if _skill_bar_bg and _skill_bar_bg.visible:
+		_skill_bar_bg.size = Vector2(vp.x + 2.0, vp.y - bg_y + 1.0)
+		_skill_bar_bg.position = Vector2(-1.0, bg_y)
+
+func _build_placement_bar() -> void:
+	_placement_bar = CenterContainer.new()
+	_placement_bar.name = "PlacementBar"
+	_placement_bar.visible = false
+	_placement_bar.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(_placement_bar)
+	var btn := _ensure_placement_start_button()
+	if btn.get_parent() != _placement_bar:
+		if btn.get_parent():
+			btn.get_parent().remove_child(btn)
+		_placement_bar.add_child(btn)
+
+func _ensure_placement_start_button() -> Button:
+	if _placement_start_btn != null and is_instance_valid(_placement_start_btn):
+		return _placement_start_btn
+	var btn := Button.new()
+	btn.text = "Start Combat"
+	btn.custom_minimum_size = Vector2(220, 56)
+	UITheme.apply_prominent_button_theme(btn, 6)
+	btn.pressed.connect(func(): placement_start_pressed.emit())
+	_placement_start_btn = btn
+	return btn
+
+func _clear_skill_slots() -> void:
+	for tw in _skill_slot_tweens:
+		if tw and tw.is_valid():
+			tw.kill()
+	_skill_slot_tweens.clear()
+	for btn in _skill_buttons:
+		btn.queue_free()
+	_skill_buttons.clear()
+	_skill_bar_hero = null
+	if _mana_bar:
+		_mana_bar.visible = false
+
+func enter_placement_phase() -> void:
+	_clear_skill_slots()
+	skill_bar.visible = false
+	if _mana_bar:
+		_mana_bar.visible = false
+	var btn := _ensure_placement_start_button()
+	if _placement_bar == null:
+		_build_placement_bar()
+	elif btn.get_parent() != _placement_bar:
+		if btn.get_parent():
+			btn.get_parent().remove_child(btn)
+		_placement_bar.add_child(btn)
+	btn.visible = true
+	btn.disabled = false
+	if _placement_bar:
+		_placement_bar.visible = true
+	if _skill_bar_bg:
+		_skill_bar_bg.visible = true
+		_skill_bar_bg.modulate = Color.WHITE
+	layer = 11
+	_reposition_placement_bar()
+	call_deferred("_reposition_placement_bar")
+
+func show_placement_bar(start_btn: Button = null) -> void:
+	if start_btn != null and start_btn != _placement_start_btn:
+		if _placement_start_btn and is_instance_valid(_placement_start_btn):
+			_placement_start_btn.queue_free()
+		_placement_start_btn = start_btn
+	enter_placement_phase()
+
+func hide_placement_bar() -> void:
+	if _placement_bar:
+		_placement_bar.visible = false
+	if _placement_start_btn and is_instance_valid(_placement_start_btn):
+		_placement_start_btn.visible = false
+	if layer > 0:
+		layer = 0
+
+func get_bottom_chrome_height() -> float:
+	if _skill_bar_bg and _skill_bar_bg.visible:
+		return _skill_bar_bg.size.y
+	return 88.0
+
+func _reposition_placement_bar() -> void:
+	if _placement_start_btn == null or not is_instance_valid(_placement_start_btn):
+		return
+	_placement_start_btn.reset_size()
+	var vp := _viewport_size()
+	var btn_size := _placement_start_btn.get_combined_minimum_size()
+	var pad_v := 14.0
+	var total_h := btn_size.y + pad_v * 2.0
+	var bg_y := vp.y - total_h
+	if _placement_bar:
+		_placement_bar.position = Vector2(0.0, bg_y)
+		_placement_bar.size = Vector2(vp.x, total_h)
+	if _skill_bar_bg and _skill_bar_bg.visible:
+		_skill_bar_bg.size = Vector2(vp.x + 2.0, vp.y - bg_y + 1.0)
+		_skill_bar_bg.position = Vector2(-1.0, bg_y)
+
+func is_mouse_over_skill_panel() -> bool:
+	var mouse = get_viewport().get_mouse_position()
+	if _placement_bar and _placement_bar.visible:
+		if Rect2(_placement_bar.global_position, _placement_bar.size).has_point(mouse):
+			return true
+	if _skill_bar_bg == null or not _skill_bar_bg.visible:
+		return false
+	return Rect2(_skill_bar_bg.global_position, _skill_bar_bg.size).has_point(mouse)
+
+func _create_skill_bar_bg() -> Control:
+	var panel = PanelContainer.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	var style = StyleBoxFlat.new()
+	style.bg_color = Color(0.04, 0.04, 0.08, 0.88)
+	style.border_color = Color(0.2, 0.22, 0.3, 0.7)
+	style.set_border_width_all(1)
+	style.border_blend = false
+	panel.add_theme_stylebox_override("panel", style)
+	return panel
+
+func _create_mana_bar_widget() -> Control:
+	var container = Control.new()
+	container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	container.size = Vector2(300, 12)
+
+	var bg = ColorRect.new()
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	bg.color = Color(0.08, 0.08, 0.16, 0.9)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	container.add_child(bg)
+
+	var fill = ColorRect.new()
+	fill.color = Color(0.25, 0.45, 1.0, 0.9)
+	fill.position = Vector2(1, 1)
+	fill.size = Vector2(298, 10)
+	fill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	container.add_child(fill)
+	_mana_bar_fill = fill
+
+	var lbl = Label.new()
+	lbl.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	UITheme.apply_font(lbl, UITheme.FONT_SM, Color(0.85, 0.9, 1.0, 1.0))
+	container.add_child(lbl)
+	_mana_bar_label = lbl
+
+	return container
+
+func _update_mana_bar(hero: HeroUnit) -> void:
+	if _mana_bar == null or _mana_bar_fill == null or _mana_bar_label == null:
+		return
+	if not is_instance_valid(hero):
+		return
+	_mana_bar.visible = true
+	var ratio = float(hero.mana) / float(maxi(hero.max_mana, 1))
+	var bar_w = maxi(int(_mana_bar.size.x) - 2, 1)
+	_mana_bar_fill.size = Vector2(int(bar_w * ratio), 10)
+	_mana_bar_label.text = "%d / %d" % [hero.mana, hero.max_mana]
 
 # --- In-world active skill indicator ---
 
@@ -920,43 +1185,47 @@ func _update_badge_previews(badge: Control, previews: Array) -> void:
 		var empty_skill = badge.get_meta("skill", null) as SkillData
 		_update_attack_type_label(badge, empty_skill, 1.0)
 		return
+	# Sort by highest damage / heal first so the primary target drives tint
+	var sorted_previews = previews.duplicate()
+	if sorted_previews.size() > 1 and not sorted_previews[0].get("is_heal", false):
+		sorted_previews.sort_custom(func(a, b): return a.get("dmg", 0) > b.get("dmg", 0))
 	dmg_box.visible = true
 	if dmg_sep:
 		dmg_sep.visible = true
-	var show_names := previews.size() > 1
-	_ensure_target_rows(target_rows, previews.size())
+	var show_names := sorted_previews.size() > 1
+	_ensure_target_rows(target_rows, sorted_previews.size())
 	var total := 0
 	var total_base := 0
-	var is_heal = previews[0].get("is_heal", false)
-	var panel_tint = _preview_panel_tint(previews)
+	var is_heal = sorted_previews[0].get("is_heal", false)
+	var panel_tint = _preview_panel_tint(sorted_previews)
 	_apply_badge_panel_styles(badge, panel_tint)
 	var skill = badge.get_meta("skill", null) as SkillData
 	var weapon_mult = 1.0
-	if not is_heal and previews.size() > 0:
-		weapon_mult = previews[0].weapon_mult
+	if not is_heal and sorted_previews.size() > 0:
+		weapon_mult = sorted_previews[0].weapon_mult
 	badge.set_meta("last_weapon_mult", weapon_mult)
 	_update_attack_type_label(badge, skill, weapon_mult)
-	for i in previews.size():
-		_update_target_row(target_rows.get_child(i) as VBoxContainer, previews[i], show_names)
+	for i in sorted_previews.size():
+		_update_target_row(target_rows.get_child(i) as VBoxContainer, sorted_previews[i], show_names)
 		if is_heal:
-			total += previews[i].get("actual_heal", previews[i].get("heal", 0))
+			total += sorted_previews[i].get("actual_heal", sorted_previews[i].get("heal", 0))
 		else:
-			total += previews[i].dmg
-			total_base += int(previews[i].get("base_power", 0))
+			total += sorted_previews[i].dmg
+			total_base += int(sorted_previews[i].get("base_power", 0))
 	var active_badge = _hero_skill_screen_popup if (
 		_hero_skill_screen_popup and is_instance_valid(_hero_skill_screen_popup)) else (
 		_smart_preview_badge if _smart_preview_badge and is_instance_valid(_smart_preview_badge) else null)
 	if active_badge and not tgt_positions.is_empty():
 		_position_badge_for_targets(active_badge, active_badge.get_meta(
 			"badge_fallback_grid", tgt_positions[0]))
-	if previews.size() > 1:
+	if sorted_previews.size() > 1:
 		total_row.visible = true
 		if total_dmg:
 			total_dmg.text = ("+%d HEAL" % total) if is_heal else ("%d DMG" % total)
 			if is_heal:
 				total_dmg.modulate = UITheme.COLOR_HEAL
-			elif not is_heal and previews.size() > 0:
-				total_dmg.modulate = _weapon_mult_damage_color(previews[0].weapon_mult)
+			elif not is_heal and sorted_previews.size() > 0:
+				total_dmg.modulate = _weapon_mult_damage_color(sorted_previews[0].weapon_mult)
 			else:
 				total_dmg.modulate = Color(0.95, 0.88, 0.55)
 	else:
@@ -1213,10 +1482,93 @@ func get_active_skill_tint() -> Color:
 		return _hero_skill_screen_popup.get_meta("badge_panel_tint", _weapon_mult_damage_color(1.0)) as Color
 	return _weapon_mult_damage_color(1.0)
 
-func hide_skill_bar() -> void:
+const _PULSE_COLOR_ON := Color(1.45, 1.2, 0.18, 1.0)
+const _PULSE_COLOR_OFF := Color.WHITE
+const _PULSE_SECS := 0.72
+
+func play_skill_selected_feedback(skill_index: int, skill: SkillData, hero: HeroUnit) -> void:
+	if skill == null or hero == null or not is_instance_valid(hero):
+		return
+	var tint := skill.get_display_tint(skill_index)
+	var btn_idx := skill_index + 1
+	if btn_idx < _skill_buttons.size():
+		var btn := _skill_buttons[btn_idx] as Control
+		if btn:
+			btn.scale = Vector2.ONE
+			var tw := btn.create_tween().set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			tw.tween_property(btn, "scale", Vector2(1.2, 1.2), 0.1)
+			tw.tween_property(btn, "scale", Vector2(1.1, 1.1), 0.14)
+	if _layout_grid:
+		show_unit_glows([hero], tint.lightened(0.25), _layout_grid)
+		if _skill_bar_bg and is_instance_valid(_skill_bar_bg):
+			_skill_bar_bg.modulate = Color(
+				lerpf(1.0, tint.r, 0.35),
+				lerpf(1.0, tint.g, 0.35),
+				lerpf(1.0, tint.b, 0.35),
+				1.0)
+
+func apply_skill_pulse(in_range_indices: Array[int]) -> void:
+	for tw in _skill_slot_tweens:
+		if tw and tw.is_valid():
+			tw.kill()
+	_skill_slot_tweens.clear()
+	# Remove any glow overlays from previous pulse
 	for btn in _skill_buttons:
-		btn.queue_free()
-	_skill_buttons.clear()
+		if is_instance_valid(btn):
+			var old = btn.get_node_or_null("_PulseGlow")
+			if old:
+				old.queue_free()
+			btn.modulate = Color.WHITE
+	if _skill_bar_bg and is_instance_valid(_skill_bar_bg):
+		_skill_bar_bg.modulate = Color.WHITE
+	if _skill_buttons.is_empty():
+		return
+	var end_btn = _skill_buttons[0]
+	if in_range_indices.is_empty():
+		_add_pulse_to_button(end_btn, true)
+		return
+	for idx in in_range_indices:
+		var btn_idx = idx + 1
+		if btn_idx < _skill_buttons.size():
+			_add_pulse_to_button(_skill_buttons[btn_idx], false)
+	# Pulse the HUD background strip too
+	if _skill_bar_bg and is_instance_valid(_skill_bar_bg):
+		var bg_tw = _skill_bar_bg.create_tween().set_loops()
+		bg_tw.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
+		bg_tw.tween_property(_skill_bar_bg, "modulate", Color(1.12, 1.06, 0.12, 1.0), _PULSE_SECS)
+		bg_tw.tween_property(_skill_bar_bg, "modulate", Color.WHITE, _PULSE_SECS)
+		_skill_slot_tweens.append(bg_tw)
+
+func _add_pulse_to_button(btn: Control, is_end: bool) -> void:
+	# Bright yellow glow overlay inside the button
+	var glow = ColorRect.new()
+	glow.name = "_PulseGlow"
+	glow.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	glow.color = Color(1.0, 0.85, 0.0, 0.0)
+	glow.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	glow.z_index = 5
+	btn.add_child(glow)
+	# Tween the glow alpha
+	var glow_tw = glow.create_tween().set_loops()
+	glow_tw.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
+	glow_tw.tween_property(glow, "color:a", 0.42, _PULSE_SECS)
+	glow_tw.tween_property(glow, "color:a", 0.0, _PULSE_SECS)
+	_skill_slot_tweens.append(glow_tw)
+	# Also modulate the whole button for extra pop
+	var mod_tw = btn.create_tween().set_loops()
+	mod_tw.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
+	mod_tw.tween_property(btn, "modulate", _PULSE_COLOR_ON, _PULSE_SECS)
+	mod_tw.tween_property(btn, "modulate", _PULSE_COLOR_OFF, _PULSE_SECS)
+	_skill_slot_tweens.append(mod_tw)
+
+func hide_skill_bar() -> void:
+	_clear_skill_slots()
+	if _skill_bar_bg and is_instance_valid(_skill_bar_bg):
+		_skill_bar_bg.modulate = Color.WHITE
+	if _skill_bar_bg:
+		_skill_bar_bg.visible = false
+	if skill_bar:
+		skill_bar.visible = false
 	clear_active_skill_on_hero()
 
 # --- Turn order ---
@@ -1373,7 +1725,7 @@ func show_move_highlights(tiles: Array, grid: Node) -> void:
 	if not tiles.is_empty():
 		_add_range_outline(tiles, Color(0, 0, 0, 0.88), 2.0, _move_outline, grid)
 
-func show_target_highlights(tiles: Array, grid: Node, tint: Color = UITheme.COLOR_SKILL_RANGE, attack_type: int = -1) -> void:
+func show_target_highlights(tiles: Array, grid: Node, tint: Color = UITheme.COLOR_SKILL_RANGE, attack_type: int = -1, is_heal_or_buff: bool = false) -> void:
 	_free_list(_skill_range_highlights)
 	_free_list(_move_skill_preview_highlights)
 	_free_list(_skill_outline)
@@ -1383,14 +1735,40 @@ func show_target_highlights(tiles: Array, grid: Node, tint: Color = UITheme.COLO
 		_add_highlight(pos, color, _skill_range_highlights, grid, HighlightStyle.FILL)
 		_skill_range_positions.append(pos)
 	if not tiles.is_empty():
-		_add_range_outline(tiles, _attack_type_outline_color(attack_type), 2.0, _skill_outline, grid)
+		var outline_color: Color
+		if is_heal_or_buff:
+			outline_color = Color(0.25, 0.85, 0.35, 0.9)
+		else:
+			outline_color = Color(0.9, 0.2, 0.2, 0.9)
+		_add_range_outline(tiles, outline_color, 2.0, _skill_outline, grid)
+
+func show_extended_reach_highlights(tiles: Array[Vector2i], grid: Node, is_heal: bool) -> void:
+	_free_list(_extended_reach_highlights)
+	if tiles.is_empty():
+		return
+	var fill_color = Color(0.25, 0.85, 0.35, 0.07) if is_heal else Color(0.9, 0.2, 0.2, 0.07)
+	var outline_color = Color(0.25, 0.85, 0.35, 0.4) if is_heal else Color(0.9, 0.2, 0.2, 0.4)
+	for pos in tiles:
+		_add_highlight(pos, fill_color, _extended_reach_highlights, grid, HighlightStyle.FILL)
+	_add_range_outline(tiles, outline_color, 1.5, _extended_reach_highlights, grid)
+
+func clear_extended_reach_highlights() -> void:
+	_free_list(_extended_reach_highlights)
+
+func show_walk_to_shoot_highlights(tiles: Array[Vector2i], grid: Node) -> void:
+	_free_list(_walk_to_shoot_highlights)
+	for pos in tiles:
+		_add_highlight(pos, Color(0.0, 0.0, 0.0, 1.0), _walk_to_shoot_highlights, grid, HighlightStyle.OUTLINE)
+
+func clear_walk_to_shoot_highlights() -> void:
+	_free_list(_walk_to_shoot_highlights)
 
 func show_valid_target_highlights(tiles: Array, grid: Node) -> void:
 	_free_list(_valid_target_highlights)
 	_free_list(_kill_highlights)
 	_valid_target_positions.clear()
 	for pos in tiles:
-		_add_highlight(pos, UITheme.COLOR_VALID_TARGET, _valid_target_highlights, grid, HighlightStyle.OUTLINE)
+		_add_highlight(pos, Color(0.0, 0.0, 0.0, 1.0), _valid_target_highlights, grid, HighlightStyle.OUTLINE)
 		_valid_target_positions.append(pos)
 	refresh_kill_overlays(grid)
 
@@ -1425,7 +1803,7 @@ func clear_smart_attack_preview() -> void:
 
 func show_smart_attack_preview(hero: HeroUnit, move_pos: Vector2i, target_pos: Vector2i,
 		skill: SkillData, skill_index: int, grid: Node, kill_positions: Array,
-		previews: Array = []) -> void:
+		previews: Array = [], skip_badge: bool = false) -> void:
 	for n in _smart_preview_nodes:
 		if is_instance_valid(n):
 			n.queue_free()
@@ -1464,6 +1842,10 @@ func show_smart_attack_preview(hero: HeroUnit, move_pos: Vector2i, target_pos: V
 	_add_highlight(target_pos, target_color, _smart_preview_nodes, grid,
 			HighlightStyle.FILL if kill_positions.has(target_pos) else HighlightStyle.OUTLINE)
 
+	if skip_badge:
+		# Direct-range cast: clear any lingering WILL USE badge, rely on ACTIVE badge
+		_clear_smart_preview_badge()
+		return
 	var cast_key := _smart_cast_key_for(hero, cast_pos)
 	if (_smart_preview_badge and is_instance_valid(_smart_preview_badge)
 			and _smart_cast_key == cast_key):
@@ -1593,6 +1975,14 @@ func show_counter_highlights(heroes: Array, grid: Node) -> void:
 func clear_counter_highlights() -> void:
 	_free_list(_counter_highlights)
 
+func show_spawn_zone_outline(tiles: Array[Vector2i], grid: Node) -> void:
+	_free_list(_spawn_zone_outline)
+	if not tiles.is_empty():
+		_add_range_outline(tiles, Color(0.0, 0.0, 0.0, 0.88), 2.0, _spawn_zone_outline, grid)
+
+func clear_spawn_zone_outline() -> void:
+	_free_list(_spawn_zone_outline)
+
 func set_active_actor(unit: Unit, grid: Node) -> void:
 	clear_active_actor()
 	_tracked_active_unit = unit
@@ -1616,8 +2006,9 @@ func set_active_actor(unit: Unit, grid: Node) -> void:
 			3: seg.position = Vector2(TILE_SIZE * 0.5 - 12, TILE_SIZE * 0.5 - 5)
 		_active_actor_ring.add_child(seg)
 	_active_actor_tween = _active_actor_ring.create_tween().set_loops()
-	_active_actor_tween.tween_property(_active_actor_ring, "scale", Vector2(1.08, 1.08), 0.35)
-	_active_actor_tween.tween_property(_active_actor_ring, "scale", Vector2(1.0, 1.0), 0.35)
+	_active_actor_tween.set_ease(Tween.EASE_IN_OUT).set_trans(Tween.TRANS_SINE)
+	_active_actor_tween.tween_property(_active_actor_ring, "scale", Vector2(1.14, 1.14), 0.32)
+	_active_actor_tween.tween_property(_active_actor_ring, "scale", Vector2(1.0, 1.0), 0.32)
 
 func _play_turn_handoff_flash(grid_pos: Vector2i, grid: Node) -> void:
 	var flash := ColorRect.new()
@@ -1659,6 +2050,35 @@ func show_unit_glows(units: Array, glow_color: Color, grid: Node) -> void:
 func clear_unit_glows() -> void:
 	_free_list(_unit_glow_highlights)
 
+func spawn_move_dust(grid_pos: Vector2i, grid: Node, unit_color: Color = Color(0.5, 0.85, 1.0, 0.45)) -> void:
+	if highlight_layer == null:
+		return
+	Utils.spawn_move_dust(grid.grid_to_world(grid_pos), highlight_layer, unit_color)
+
+func play_damage_vignette(tier: int, is_hero_attack: bool = false) -> void:
+	if _screen_popup_layer == null:
+		return
+	var strength: float
+	if is_hero_attack:
+		strength = clampf(float(tier) / 3.0, 0.14, 0.38)
+	else:
+		strength = clampf(float(tier - 1) / 2.0, 0.15, 0.42)
+	var vignette := ColorRect.new()
+	vignette.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vignette.offset_right = 0.0
+	vignette.offset_bottom = 0.0
+	vignette.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	if is_hero_attack:
+		vignette.color = Color(0.04, 0.42, 0.16, strength)
+	else:
+		vignette.color = Color(0.45, 0.02, 0.05, strength)
+	vignette.modulate = Color(1, 1, 1, 1)
+	_screen_popup_layer.add_child(vignette)
+	_screen_popup_layer.move_child(vignette, 0)
+	var tw := vignette.create_tween()
+	tw.tween_property(vignette, "modulate:a", 0.0, 0.38)
+	tw.finished.connect(vignette.queue_free)
+
 func spawn_move_ghost(grid_pos: Vector2i, grid: Node, unit_color: Color = Color(0.5, 0.85, 1.0, 0.45)) -> void:
 	var ghost := ColorRect.new()
 	ghost.color = unit_color
@@ -1668,8 +2088,8 @@ func spawn_move_ghost(grid_pos: Vector2i, grid: Node, unit_color: Color = Color(
 	ghost.z_index = 3
 	highlight_layer.add_child(ghost)
 	_move_ghosts.append(ghost)
-	var tween := ghost.create_tween()
-	tween.tween_property(ghost, "modulate:a", 0.0, 0.35)
+	var tween := ghost.create_tween().set_ease(Tween.EASE_OUT)
+	tween.tween_property(ghost, "modulate:a", 0.0, 0.28)
 	tween.finished.connect(func():
 		if is_instance_valid(ghost):
 			ghost.queue_free()
@@ -1685,8 +2105,8 @@ func play_kill_flash(grid_pos: Vector2i, grid: Node) -> Signal:
 	flash.z_index = 18
 	highlight_layer.add_child(flash)
 	var skull := Label.new()
-	skull.text = "☠"
-	skull.add_theme_font_size_override("font_size", 22)
+	skull.text = "KILL"
+	Utils.apply_floating_label_style(skull, 16)
 	skull.modulate = Color(1, 0.95, 0.2)
 	skull.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if _screen_popup_layer:
@@ -1705,18 +2125,14 @@ func play_kill_flash(grid_pos: Vector2i, grid: Node) -> Signal:
 	)
 	return tween.finished
 
-func show_status_indicators(counter_heroes: Array, linked_pairs: Array, grid: Node) -> void:
+func show_status_indicators(_counter_heroes: Array, linked_pairs: Array, grid: Node) -> void:
 	_free_list(_status_icons)
-	for hero in counter_heroes:
-		if not is_instance_valid(hero):
-			continue
-		_add_status_icon(hero, "🛡", Color(0.3, 0.9, 0.5), grid)
 	for pair in linked_pairs:
 		if pair.size() < 2:
 			continue
 		for hero in pair:
 			if is_instance_valid(hero):
-				_add_status_icon(hero, "🔗", Color(0.5, 0.85, 1.0), grid)
+				_add_status_icon(hero, "LNK", Color(0.5, 0.85, 1.0), grid)
 
 func _add_status_icon(unit: Node, icon_text: String, color: Color, _grid: Node) -> void:
 	if not unit is Unit:
@@ -1724,7 +2140,7 @@ func _add_status_icon(unit: Node, icon_text: String, color: Color, _grid: Node) 
 	var lbl := Label.new()
 	lbl.text = icon_text
 	lbl.modulate = color
-	lbl.add_theme_font_size_override("font_size", 14)
+	Utils.apply_floating_label_style(lbl, 10)
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	if _screen_popup_layer:
 		_screen_popup_layer.add_child(lbl)
@@ -1747,6 +2163,9 @@ func clear_highlights() -> void:
 	clear_counter_highlights()
 	clear_smart_attack_preview()
 	clear_unit_glows()
+	clear_spawn_zone_outline()
+	clear_walk_to_shoot_highlights()
+	clear_extended_reach_highlights()
 	_move_positions.clear()
 	_skill_range_positions.clear()
 	_valid_target_positions.clear()

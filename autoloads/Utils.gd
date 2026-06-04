@@ -46,12 +46,17 @@ func unique_left_column_frames(sheet: Texture2D, count: int,
 		frames.append(sprite_frame(sheet, frame_size, Vector2i(0, row)))
 	return frames
 
+func apply_floating_label_style(label: Label, font_size: int = 14) -> void:
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_constant_override("outline_size", 3)
+	label.add_theme_color_override("font_outline_color", Color(0.0, 0.0, 0.0, 1.0))
+
 # Spawns a label at world_pos that drifts upward and fades out.
 func floating_text(text: String, color: Color, world_pos: Vector2, parent: Node, font_size: int = 14) -> void:
 	var label := Label.new()
 	label.text = text
 	label.modulate = color
-	label.add_theme_font_size_override("font_size", font_size)
+	apply_floating_label_style(label, font_size)
 	var spread := float(text.hash() % 7) - 3.0
 	label.position = world_pos + Vector2(-12.0 + spread * 6.0, -30.0 - font_size * 0.5)
 	label.z_index = 20
@@ -82,8 +87,8 @@ func launch_projectile(from: Vector2, to: Vector2, color: Color, parent: Node) -
 	trail.z_index = 14
 	parent.add_child(trail)
 
-	var tween := proj.create_tween()
-	tween.tween_property(proj, "position", to - Vector2(4, 4), 0.22)
+	var tween := proj.create_tween().set_ease(Tween.EASE_IN).set_trans(Tween.TRANS_QUAD)
+	tween.tween_property(proj, "position", to - Vector2(4, 4), 0.18)
 	var scale_tw := proj.create_tween()
 	scale_tw.tween_property(proj, "scale", Vector2(0.65, 1.35), 0.11)
 	scale_tw.tween_property(proj, "scale", Vector2.ONE, 0.11)
@@ -136,7 +141,7 @@ func hitstop(duration: float) -> void:
 # How long to freeze the game on a hit, scaled by how big the hit was.
 func hitstop_duration(dmg: int, max_hp: int, is_crit: bool, is_kill: bool) -> float:
 	if is_kill:
-		return 0.12
+		return 0.2
 	var tier := damage_tier(dmg, max_hp)
 	var base = [0.04, 0.06, 0.08, 0.1][tier]
 	if is_crit:
@@ -144,12 +149,52 @@ func hitstop_duration(dmg: int, max_hp: int, is_crit: bool, is_kill: bool) -> fl
 	return base
 
 # Shakes `node` with a strength scaled by the hit's damage tier.
-func shake_for_hit(node: Node2D, dmg: int, max_hp: int, is_crit: bool) -> void:
+func shake_for_hit(node: Node2D, dmg: int, max_hp: int, is_crit: bool, is_kill: bool = false) -> void:
 	var tier := damage_tier(dmg, max_hp)
 	var mult = [0.5, 1.0, 1.45, 2.1][tier]
 	if is_crit:
 		mult *= 1.25
+	if is_kill:
+		mult *= 1.75
 	shake_node(node, int(dmg * mult))
+
+func spawn_impact_burst(world_pos: Vector2, parent: Node, color: Color = Color(1.0, 0.92, 0.85)) -> void:
+	if parent == null:
+		return
+	var offsets: Array[Vector2] = [
+		Vector2(-6, -2), Vector2(6, -3), Vector2(-4, 5), Vector2(5, 4), Vector2(0, -7),
+	]
+	for off in offsets:
+		var spark := ColorRect.new()
+		spark.color = color
+		spark.size = Vector2(4, 4)
+		spark.position = world_pos + off - Vector2(2, 2)
+		spark.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		spark.z_index = 16
+		parent.add_child(spark)
+		var tw := spark.create_tween().set_parallel(true)
+		tw.tween_property(spark, "position", spark.position + off * 1.6, 0.14)
+		tw.tween_property(spark, "modulate:a", 0.0, 0.14)
+		tw.finished.connect(spark.queue_free)
+
+func spawn_move_dust(world_pos: Vector2, parent: Node, color: Color) -> void:
+	if parent == null:
+		return
+	var dust_color := Color(color.r, color.g, color.b, color.a * 0.55)
+	for i in 4:
+		var puff := ColorRect.new()
+		puff.color = dust_color
+		puff.size = Vector2(5, 5)
+		var angle := float(i) * TAU / 4.0 + 0.4
+		var off := Vector2(cos(angle), sin(angle)) * 5.0
+		puff.position = world_pos + off - Vector2(2.5, 2.5)
+		puff.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		puff.z_index = 4
+		parent.add_child(puff)
+		var tw := puff.create_tween().set_parallel(true)
+		tw.tween_property(puff, "position", puff.position + off * 2.2, 0.22)
+		tw.tween_property(puff, "modulate:a", 0.0, 0.22)
+		tw.finished.connect(puff.queue_free)
 
 # --- Screen-space popup placement ---
 # Pure geometry helpers for positioning popups/badges so they stay on screen

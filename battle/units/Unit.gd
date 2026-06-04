@@ -15,6 +15,9 @@ var crit_chance: float = 0.0
 @onready var hp_bar: ProgressBar = $HPBar
 @onready var label: Label = $Label
 
+func _ready() -> void:
+	_configure_body_sprite()
+
 func init_stats(base_hp: int, base_atk: int, base_def: int, base_spd: int,
 		atype: WeaponTriangle.Type, unit_name: String) -> void:
 	max_hp = base_hp
@@ -43,6 +46,19 @@ func set_body_sprite(sprite: Texture2D) -> void:
 		return
 	body.texture = sprite
 	body.modulate = Color(1, 1, 1, 1)
+	_configure_body_sprite()
+
+func _configure_body_sprite() -> void:
+	var body := get_node_or_null("Body") as Sprite2D
+	if body == null:
+		return
+	body.centered = true
+
+func snap_to_tile_center(grid: Node = null) -> void:
+	if grid != null and grid.has_method("grid_to_world"):
+		position = grid.grid_to_world(grid_pos)
+	else:
+		position = _grid_center()
 
 func get_body_texture() -> Texture2D:
 	var body := get_node_or_null("Body") as Sprite2D
@@ -86,15 +102,50 @@ func reset_temp_stats() -> void:
 func is_dead() -> bool:
 	return hp <= 0
 
-func move_to_world(world_pos: Vector2) -> Tween:
+func _grid_center() -> Vector2:
+	return Vector2(
+		grid_pos.x * Grid.TILE_SIZE + Grid.TILE_SIZE * 0.5,
+		grid_pos.y * Grid.TILE_SIZE + Grid.TILE_SIZE * 0.5)
+
+func face_toward(world_pos: Vector2) -> void:
+	var body := get_node_or_null("Body") as Sprite2D
+	if body == null:
+		return
+	var sy := body.scale.y if body.scale.y != 0.0 else 1.0
+	var sx := absf(body.scale.x)
+	body.scale = Vector2(-sx if world_pos.x < position.x else sx, sy)
+
+func play_move_anticipation(world_pos: Vector2) -> Signal:
+	face_toward(world_pos)
+	var body := get_node_or_null("Body") as Sprite2D
+	var dir := (world_pos - position).normalized()
+	if dir == Vector2.ZERO:
+		dir = Vector2(0, -1)
 	var tween := create_tween()
-	tween.tween_property(self, "position", world_pos, 0.15)
+	tween.tween_property(self, "position", position - dir * 4.0, 0.05)
+	if body:
+		tween.parallel().tween_property(body, "scale", Vector2(body.scale.x * 1.04, 0.94), 0.05)
+	return tween.finished
+
+func move_to_world(world_pos: Vector2) -> Tween:
+	face_toward(world_pos)
+	var body := get_node_or_null("Body") as Sprite2D
+	var tween := create_tween().set_ease(Tween.EASE_OUT).set_trans(Tween.TRANS_BACK)
+	tween.tween_property(self, "position", world_pos, 0.2)
+	tween.tween_callback(func(): position = world_pos)
+	if body:
+		var sy := body.scale.y
+		var sx := absf(body.scale.x) * signf(body.scale.x)
+		var squash := create_tween()
+		squash.tween_property(body, "scale", Vector2(sx * 1.1, sy * 0.9), 0.08)
+		squash.tween_property(body, "scale", Vector2(sx, sy), 0.12)
 	return tween
 
 # Wind-up before attack: slight squash and pull-back.
 func play_attack_windup(toward: Vector2 = Vector2.ZERO) -> Signal:
 	var body := get_node_or_null("Body") as Sprite2D
-	var origin := position
+	var origin := _grid_center()
+	position = origin
 	var dir := (toward - origin).normalized() if toward != Vector2.ZERO else Vector2(0, -1)
 	var tween := create_tween()
 	if body:
@@ -106,10 +157,21 @@ func play_attack_windup(toward: Vector2 = Vector2.ZERO) -> Signal:
 	return tween.finished
 
 # Quick lunge toward `toward`, then snap back. Pass Vector2.ZERO to lunge upward.
+func play_skill_ready_pulse() -> void:
+	var body := get_node_or_null("Body") as Sprite2D
+	if body == null:
+		return
+	var sy := body.scale.y if body.scale.y != 0.0 else 1.0
+	var sx := absf(body.scale.x) * signf(body.scale.x)
+	var tw := create_tween().set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(body, "scale", Vector2(sx * 1.14, sy * 1.14), 0.11)
+	tw.tween_property(body, "scale", Vector2(sx, sy), 0.16)
+
 func play_attack_animation(toward: Vector2 = Vector2.ZERO) -> void:
 	var body := get_node_or_null("Body") as Sprite2D
-	var origin := position
-	var dir := (toward - position).normalized() if toward != Vector2.ZERO else Vector2(0, -1)
+	var origin := _grid_center()
+	position = origin
+	var dir := (toward - origin).normalized() if toward != Vector2.ZERO else Vector2(0, -1)
 	var tween := create_tween()
 	tween.tween_property(self, "position", origin + dir * 8.0, 0.06)
 	tween.tween_property(self, "position", origin, 0.08)
@@ -117,15 +179,21 @@ func play_attack_animation(toward: Vector2 = Vector2.ZERO) -> void:
 		tween.parallel().tween_property(body, "scale", Vector2(1.08, 1.08), 0.06)
 		tween.tween_property(body, "scale", Vector2(1.0, 1.0), 0.06)
 
-# Flash red and shake when hit.
-func play_hit_animation() -> void:
+# Flash white then red and shake when hit.
+func play_hit_animation(spawn_burst: bool = true) -> void:
 	var body := get_node_or_null("Body")
-	var origin := position
+	var origin := _grid_center()
+	position = origin
 	if body:
 		var orig_color = body.modulate
 		var ct := create_tween()
-		ct.tween_property(body, "modulate", Color(2.2, 0.35, 0.35, 1.0), 0.07)
+		ct.tween_property(body, "modulate", Color(3.0, 3.0, 3.0, 1.0), 0.03)
+		ct.tween_property(body, "modulate", Color(2.2, 0.35, 0.35, 1.0), 0.05)
 		ct.tween_property(body, "modulate", orig_color, 0.14)
+	if spawn_burst:
+		var parent := get_parent()
+		if parent:
+			Utils.spawn_impact_burst(position, parent, Color(1.0, 0.45, 0.35, 0.95))
 	var pt := create_tween()
 	pt.tween_property(self, "position", origin + Vector2(4.0, -1.0), 0.05)
 	pt.tween_property(self, "position", origin - Vector2(3.0, 1.0), 0.05)
@@ -136,9 +204,13 @@ func play_crit_hit_animation() -> void:
 	if body:
 		var orig_color = body.modulate
 		var ct := create_tween()
-		ct.tween_property(body, "modulate", Color(2.8, 2.8, 2.8, 1.0), 0.05)
+		ct.tween_property(body, "modulate", Color(3.2, 3.2, 3.2, 1.0), 0.03)
+		ct.tween_property(body, "modulate", Color(2.8, 2.8, 2.8, 1.0), 0.04)
 		ct.tween_property(body, "modulate", orig_color, 0.12)
-	play_hit_animation()
+	var parent := get_parent()
+	if parent:
+		Utils.spawn_impact_burst(position, parent, Color(1.0, 0.92, 0.35, 1.0))
+	play_hit_animation(false)
 
 func play_heal_animation() -> void:
 	var body := get_node_or_null("Body")

@@ -84,7 +84,8 @@ func _build_ui() -> void:
 	var dim = ColorRect.new()
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.color = Color(0, 0, 0, 0.62)
-	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	dim.gui_input.connect(_on_backdrop_clicked)
 	root.add_child(dim)
 
 	_panel = Panel.new()
@@ -1760,11 +1761,28 @@ func _update_next_button() -> void:
 
 # ── Next round ────────────────────────────────────────────────────────────────
 
+func _on_backdrop_clicked(event: InputEvent) -> void:
+	if not event is InputEventMouseButton:
+		return
+	var mb := event as InputEventMouseButton
+	if not mb.pressed or mb.button_index != MOUSE_BUTTON_LEFT:
+		return
+	if _picker_overlay != null and _picker_overlay.visible:
+		return
+	if _panel.get_global_rect().has_point(mb.global_position):
+		return
+	_continue_to_next_level()
+
+func _continue_to_next_level() -> void:
+	if _next_btn.disabled or not PlayerInventory.can_start_round():
+		return
+	_on_next_round_pressed()
+
 func _on_next_round_pressed() -> void:
 	_next_btn.disabled = true
 	_hide_tooltip()
+	next_round_pressed.emit()
 	var tw = create_tween().set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	tw.tween_property(_panel, "position", Vector2(PANEL_X, PANEL_Y - 540), 0.35)
 	await tw.finished
 	visible = false
-	next_round_pressed.emit()
